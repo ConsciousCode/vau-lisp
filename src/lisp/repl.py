@@ -19,10 +19,9 @@ def read_iter(s):
             yield expr
     except StopIteration:
         raise SyntaxError(f"Unexpected EOF before line {p.tokenizer.line}")# from None
-    except (SyntaxError, GeneratorExit):
+    except GeneratorExit:
         raise
     except:
-        tb.print_exc()
         print("Failed before line", p.tokenizer.line)
         raise
 
@@ -48,7 +47,7 @@ def eval(expr, env):
                 #    return eval(Cons(eval(car, env), cdr), env)
                 
                 case Operative(senv, ptree, penv, body):
-                    #print("Eval operative", car, body, senv)
+                    #print("\x1b[7mEval operative\x1b[m", car, body, senv)
                     lenv = Environment({}, senv)
                     if not lenv.define(ptree, cdr):
                         raise TypeError(f"Couldn't match ptree {display(ptree)} with {display(cdr)}")
@@ -56,78 +55,40 @@ def eval(expr, env):
                         raise TypeError(f"Couldn't match penv {display(penv)} with {display(env)}")
                     
                     last = None
-                    if STRATEGY:
-                        while True:
-                            match body:
-                                case None: break
-                                
-                                case Cons(ar, dr):
-                                    print("Cons", ar, dr)
-                                    last = eval(ar, lenv)
-                                    body = dr
-                                
-                                case _:
-                                    print("Operative Non-cons cdr", body)
-                                    body = eval(body, lenv)
-                                    #print("Result:", body)
-                                    break
-                                    if not isinstance(cdr, Cons):
-                                        break
-                    else:
-                        if isinstance(body, Cons):
-                            for expr in body:
-                                last = eval(expr, lenv)
-                        else:
-                            body = eval(body, lenv)
+                    if not isinstance(body, Cons):
+                        body = eval(body, lenv)
+                    
+                    for expr in body:
+                        last = eval(expr, lenv)
                         
                     return last
                 
                 case Applicative(combiner):
+                    #print("Applying", combiner, cdr)
                     if cdr is None:
                         args = None
                     else:
                         ls = []
-                        if STRATEGY:
-                            while True:
-                                match cdr:
-                                    case None:
-                                        print("None")
-                                        break
-                                    
-                                    case Cons(ar, dr):
-                                        print("Cons", ar, dr)
-                                        ls.append(eval(ar, env))
-                                        cdr = dr
-                                    
-                                    case _:
-                                        print("Applicative Non-cons cdr", cdr)
-                                        while cdr is not None:
-                                            while isinstance(cdr, Cons):
-                                                cdr = cdr.tail
-                                            
-                                            cdr = eval(cdr, env)
-                                            if cdr is None:
-                                                break
-                                        print("Cdr result:", cdr)
-                                        if not isinstance(cdr, Cons):
-                                            print("Not cons:", cdr)
-                                            break
-                            args = Cons.from_list(ls, cdr)
+                        if isinstance(cdr, Cons):
+                            for cdr in cdr.pairs():
+                                ls.append(eval(cdr.head, env))
+                            args = Cons.from_list(ls, eval(cdr.tail, env))
                         else:
-                            if isinstance(cdr, Cons):
-                                for cdr in cdr.pairs():
-                                    ls.append(eval(cdr.head, env))
-                                args = Cons.from_list(ls, eval(cdr.tail, env))
-                            else:
-                                #print("Not cons:", cdr)
-                                args = eval(cdr, env)
-                                #print("evaluated cdr:", args)
+                            #print("Not cons:", cdr)
+                            args = eval(cdr, env)
+                            #print("evaluated cdr:", args)
                     
                     if isinstance(combiner, Cons):
                         raise TypeError(f"Combiner is a cons: {combiner}")
                     
+                    args.plist['pos'] = expr.plist['pos']
+                    
+                    ex = eval(Cons(combiner, args), env)
+                    if isinstance(ex, Cons):
+                        ex.plist['pos'] = expr.plist['pos']
+                    #print("Got", ex)
                     #return combiner(env, args)
-                    return eval(Cons(combiner, args), env)
+                    return ex
                 
                 case Builtin(fn):
                     return fn(env, cdr)
@@ -213,14 +174,6 @@ def repl(env=None):
         pass
     print()
 
-def cond(e, *cases):
-    for case in cases:
-        test = case.head
-        body = case.tail
-        if test == Symbol("else") or eval(test, e):
-            return eval(body, e)
-    raise ValueError("No true condition in $cond")
-
 CONSTS = {
     "#ignore": Symbol("#ignore")
 }
@@ -270,12 +223,7 @@ APPLICATIVES = {
     "print": print
 }
 
-def define(env, name, value):
-    env.define(name, eval(value, env))
-    return INERT
-
 OPERATIVES = {
-    "$def!": define
 }
 
 def e_dotp(k, v):
@@ -294,7 +242,8 @@ COMBINERS = {
     **{k: e_dotp(k, v) for k, v in OPERATIVES.items()},
     **{k: dotp(k, v) for k, v in APPLICATIVES.items()},
     #"list": Applicative(Builtin("list", builtin_list)),
-    "$vau": Builtin("$vau", Operative)
+    "$vau": Builtin("$vau", Operative),
+    "def!": Applicative(e_dotp("def!", Environment.define))
 }
 
 class BuiltinEnv(UserDict):

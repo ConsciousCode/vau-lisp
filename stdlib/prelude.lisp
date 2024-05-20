@@ -1,20 +1,26 @@
 ;; This prelude is an exercise in frugality
 ;; I wanted to try to implement powerful features on a few very basic primitives
 ;; The primitives:
-;; - $def! - definition of one name to one value
+;; - def! - definition of one name to one value
 ;; - eq? - identity comparison of just two values
 ;; - $vau - binds parameters to a single name, unpacking is manual
 ;; - wrap - wrap a combiner as an applicative
 ;; - unwrap - remove an applicative wrapping
 ;; - car/cdr - operators for decomposing pairs
 
+;; Note: #ignore doesn't actually *do* anything until way later when we define
+;;  pattern matching. Before that point, it's merely a naming convention.
+(def! "quote" ($vau x #ignore (car x)))
+(def! 'list (wrap ($vau x #ignore x)))
+
+(def! '$def! ($vau nv env
+    (eval (list def! (display (car nv)) (list (unwrap eval) (car (cdr nv)) env)) env) ))
+
 ($def! #inert ($def! nil ())) ;; REPL displays nothing
 ($def! true  (eq? nil  nil))
 ($def! false (eq? true nil))
-($def! quote ($vau x #ignore (car x)))
 ($def! #ignore '#ignore)
-($def! $current-environment ($vau _ e e))
-($def! list (wrap ($vau x #ignore x)))
+($def! $current-environment ($vau #ignore e e))
 
 ($def! begin ($vau body env
     ((eval (list $vau #ignore #ignore . body) env)) ))
@@ -25,6 +31,8 @@
     ($def! parm (car  pb))
     ($def! body (cdr  pb))
     (eval (list $def! name (list wrap (list $vau parm #ignore . body))) env) ))
+
+($defn! null? x (eq? nil . x))
 
 ($defn!  caar xs      (car (car . xs)) )
 ($defn!  cadr xs      (car (cdr . xs)) )
@@ -39,6 +47,31 @@
             (caddr ctf) )
         env )))
 
+($defn! len= ls-len
+    ($def! ls  (car ls-len))
+    ($def! len (cadr ls-len))
+    ($if (null? ls)
+        (eq? len 0)
+        (len= (cdr ls) (- len 1)) ))
+
+($defn! length ls-
+    ($def! ls (car ls-))
+    ($if (null? ls) 0 (+ 1 (length (cdr ls)))) )
+
+#;($def! if ($vau ctf env
+    ($if (len= ctf 3)
+        (eval (list $if . ctf) env)
+        (error "if applied to too few arguments:" (display ctf)) )))
+
+($defn! apply appv-arg-env static-env
+    ($def! appv  (car appv-arg-env))
+    ($def! arg  (cadr appv-arg-env))
+    ($def! env (caddr appv-arg-env))
+    (eval (cons (unwrap appv) arg)
+        (if (null? opt)
+            (make-environment)
+            (car opt) )))
+
 ;; Concatenate exactly two lists
 ($defn! concat2 xs-ys
     ($def! xs ( car xs-ys))
@@ -47,7 +80,7 @@
         ys
         (cons (car xs) (concat2 (cdr xs) ys)) ))
 
-;; Unpacks values into parameter trees
+;; Unpacks values into parameter trees, returning a list of name-value pairs
 ;; (ns vs) -> ((n . v)*) | #inert
 ($defn! unpack ns-vs
     ($def! ns ( car ns-vs))
@@ -115,9 +148,11 @@
     ($def! body (cddr peb))
     ($vau args env
         ($def! local-env (make-environment static-env))
-        (eval (list match ptree (cons (unwrap list) args)) local-env)
-        (set! penv env local-env)
-        (eval (cons begin body) local-env) )))
+        (if (eval (list match ptree (cons (unwrap list) args)) local-env)
+            (begin
+                (set! penv env local-env)
+                (eval (cons begin body) local-env))
+            (error "Pattern matching failed:" (display ptree) "got" (display args)) ))))
 
 ;; Now we have parameter unpacking
 ($def! lambda (vau (ptree . body) env
@@ -165,11 +200,14 @@
         b
         (foldl f (f b (car xs)) (cdr xs)) ))
 
-(defn map (f xs)
-    (assert (combiner? f) "map must take a function")
+(defn foldr (f b xs)
     (if (null? xs)
-        ()
-        (cons (f (car xs)) (map f (cdr xs)))))
+        b
+        (f (car xs) (foldr f b (cdr xs))) ))
+
+(defn map (f xs)
+    (foldr (lambda (x rest) (cons (f xs) rest)))
+    () xs)
 
 ($def! into (wrap ($vau comb-env outer-env
     ($def! comb ( car comb-env))

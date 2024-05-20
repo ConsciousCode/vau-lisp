@@ -21,10 +21,15 @@ INERT = Inert.__new__(Inert)
 
 def display(v):
     match v:
+        #case Symbol(n): return n
         case None: return "()"
         case True: return "true"
         case False: return "false"
+        case str(s):
+            s = s.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{s}"'
     
+    #return repr(type(v).__name__)
     return repr(v)
 
 class Cons:
@@ -33,7 +38,7 @@ class Cons:
     def __init__(self, head, tail=None, plist=None):
         self.head = head
         self.tail = tail
-        self.plist = plist
+        self.plist = {} if plist is None else plist
     
     def __repr__(self) -> str:
         s = []
@@ -47,12 +52,12 @@ class Cons:
             s.append(f". {cur}")
         
         base = f"({' '.join(s)})"
-        '''
+        #'''
         if self.plist:
             if pos := self.plist.get('pos'):
                 ln, _ = pos
                 return f"{base}@{ln}"
-        '''
+        #'''
         return base
     
     def __len__(self):
@@ -176,35 +181,17 @@ class Environment(Cons):
         
         return f"Environment({' ~ '.join(s)})"
     
-    def define(self, ptree, value):
+    def define(self, param, value):
         '''Optimized for lists but supports arbitrary trees and improper lists'''
-        match ptree:
-            case None:
-                if value is not None:
-                    return False
-            
-            case Symbol("#ignore"):
-                pass
-            
-            case Symbol(name):
-                self[name] = value
-            
-            case Cons():
-                if not isinstance(value, Cons):
-                    return False
-                
-                for ptree, value in zip(ptree.pairs(), value.pairs()):
-                    #print(ptree.head, "=", value.head)
-                    if not self.define(ptree.head, value.head):
-                        return False
-                
-                #print(ptree.tail, "=", value.tail)
-                if not self.define(ptree.tail, value.tail):
-                    return False
-            
-            case _: raise TypeError(f"Invalid ptree: {ptree} : {value}")
+        match param:
+            case Symbol(n): name = n
+            case str(n): name = n
+            case _: raise TypeError("def! must take a symbol")
         
-        return True
+        self[name] = value
+        if isinstance(value, Applicative):
+            value.combiner.name = name
+        return INERT
 
 class Operative:
     __match_args__ = ("env", "ptree", "penv", "body")
@@ -212,6 +199,7 @@ class Operative:
     penv: Symbol
     
     def __init__(self, env, args):
+        self.name = None
         self.env = env
         self.ptree = args.head
         self.penv = args.tail.head
@@ -223,8 +211,9 @@ class Operative:
                     raise TypeError("Operative body must have at least one expression")
     
     def __repr__(self):
-        body = ' '.join(map(display, self.body))
-        return f"($vau {display(self.ptree)} {display(self.penv)} {body})"
+        if self.name is None:
+            return "<$vau (anonymous)>"
+        return f"<$vau {self.name}>"
 
 class Applicative:
     '''Wrapper for applicatives so (unwrap (wrap appv)) == appv in all cases'''
