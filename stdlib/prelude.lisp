@@ -11,9 +11,9 @@
 ;; Note: #ignore doesn't actually *do* anything until way later when we define
 ;;  pattern matching. Before that point, it's merely a naming convention.
 (def! "quote" ($vau x #ignore (car x)))
-(def! 'list (wrap ($vau x #ignore x)))
+(def! "list" (wrap ($vau x #ignore x)))
 
-(def! '$def! ($vau nv env
+(def! "$def!" ($vau nv env
     (eval (list def! (display (car nv)) (list (unwrap eval) (car (cdr nv)) env)) env) ))
 
 ($def! #inert ($def! nil ())) ;; REPL displays nothing

@@ -20,6 +20,7 @@ def read_iter(s):
     except StopIteration:
         raise SyntaxError(f"Unexpected EOF before line {p.tokenizer.line}")# from None
     except GeneratorExit:
+        print("Generator exit", p.tokenizer.line)
         raise
     except:
         print("Failed before line", p.tokenizer.line)
@@ -49,16 +50,18 @@ def eval(expr, env):
                 case Operative(senv, ptree, penv, body):
                     #print("\x1b[7mEval operative\x1b[m", car, body, senv)
                     lenv = Environment({}, senv)
-                    if not lenv.define(ptree, cdr):
+                    if not lenv.define(ptree.name, cdr):
                         raise TypeError(f"Couldn't match ptree {display(ptree)} with {display(cdr)}")
-                    if not lenv.define(penv, env):
+                    if not lenv.define(penv.name, env):
                         raise TypeError(f"Couldn't match penv {display(penv)} with {display(env)}")
                     
                     last = None
                     if not isinstance(body, Cons):
+                        #print("Non-cons body", body)
                         body = eval(body, lenv)
                     
                     for expr in body:
+                        #print("Eval", expr)
                         last = eval(expr, lenv)
                         
                     return last

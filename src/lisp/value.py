@@ -184,19 +184,24 @@ class Environment(Cons):
     def define(self, param, value):
         '''Optimized for lists but supports arbitrary trees and improper lists'''
         match param:
-            case Symbol(n): name = n
-            case str(n): name = n
-            case _: raise TypeError("def! must take a symbol")
-        
-        self[name] = value
-        if isinstance(value, Applicative):
-            value.combiner.name = name
-        return INERT
+            case str(name):
+                self[name] = value
+                if isinstance(value, Applicative):
+                    value = value.combiner
+                if isinstance(value, Operative):
+                    value.name = name
+                return INERT
+            case _:
+                raise TypeError(f"def! must take a symbol: {type(param).__name__}")
 
 class Operative:
     __match_args__ = ("env", "ptree", "penv", "body")
     
+    name: Optional[str]
+    env: Environment
+    ptree: Symbol
     penv: Symbol
+    body: Cons
     
     def __init__(self, env, args):
         self.name = None
@@ -211,6 +216,7 @@ class Operative:
                     raise TypeError("Operative body must have at least one expression")
     
     def __repr__(self):
+        return f"<$vau {self.ptree} {self.penv} {self.body}>"
         if self.name is None:
             return "<$vau (anonymous)>"
         return f"<$vau {self.name}>"
