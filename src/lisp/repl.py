@@ -245,6 +245,7 @@ APPLICATIVES = {
     ">=": lambda *args: all(x >= args[0] for x in args),
     "car": lambda x: x.head,
     "cdr": lambda x: x.tail,
+    "select": lambda c, t, f: t if c else f,
     "error": error,
     "cons": Cons,
     "wrap": Applicative,
@@ -274,8 +275,7 @@ def define(env, name, value):
     return INERT
 
 OPERATIVES = {
-    "$def!": define,
-    "$if": lambda e, c, t, f: eval(t if eval(c, e) else f, e)
+    "$def!": define
 }
 
 def e_dotp(k, v):

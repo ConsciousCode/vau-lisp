@@ -32,11 +32,18 @@
 ($defn!  cddr xs      (cdr (cdr . xs)) )
 ($defn! caddr xs (car (cdr (cdr . xs))))
 
+($def! if ($vau ctf env
+    (eval
+        (select (eval (car ctf) env)
+            ( cadr ctf)
+            (caddr ctf) )
+        env )))
+
 ;; Concatenate exactly two lists
 ($defn! concat2 xs-ys
     ($def! xs ( car xs-ys))
     ($def! ys (cadr xs-ys))
-    ($if (null? xs)
+    (if (null? xs)
         ys
         (cons (car xs) (concat2 (cdr xs) ys)) ))
 
@@ -45,23 +52,23 @@
 ($defn! unpack ns-vs
     ($def! ns ( car ns-vs))
     ($def! vs (cadr ns-vs))
-    ($if (cons? ns)
-        ($if (cons? vs)
+    (if (cons? ns)
+        (if (cons? vs)
             (begin
                 ($def! left (unpack (car ns) (car vs)))
-                ($if (eq? left #inert)
+                (if (eq? left #inert)
                     #inert
                     (begin
                         ($def! right (unpack (cdr ns) (cdr vs)))
-                        ($if (eq? right #inert)
+                        (if (eq? right #inert)
                             #inert
                             (concat2 left right) ))))
             #inert)
-        ($if (symbol? ns)
-            ($if (eq? ns #ignore)
+        (if (symbol? ns)
+            (if (eq? ns #ignore)
                 ()
                 (list (cons ns vs)) )
-            ($if (eq? ns vs)
+            (if (eq? ns vs)
                 () #inert ))))
 
 ;; Set a name to a value in an environment
@@ -74,7 +81,7 @@
         (eval target env))))
 
 ($defn! assert cond-msg
-    ($if (car cond-msg)
+    (if (car cond-msg)
         #inert
         (error (cadr cond-msg)) ))
 
@@ -82,7 +89,7 @@
 ($defn! set-list! nvs-e
     ($def! nvs ( car nvs-e))
     ($def! env (cadr nvs-e))
-    ($if (null? nvs)
+    (if (null? nvs)
         ()
         (begin
             ($def! nv  (car nvs))
@@ -94,7 +101,7 @@
     ;; We want to only assign if there's an actual match
     ;; First, depth-first in-order convert into a pair of lists for names and values
     ($def! nvs (unpack (car ns-vs) (eval (cadr ns-vs) env)))
-    ($if (eq? nvs #inert)
+    (if (eq? nvs #inert)
         false  ;; Match failed
         (begin ;; Match succeeded, define everything
             (set-list! nvs env)
@@ -123,47 +130,44 @@
     (eval (list $def! name (list lambda ptree . body)) env) ))
 
 ($def! def (vau (ptree values) env
-    ($if (eval (list match ptree values) env)
+    (if (eval (list match ptree values) env)
         #inert
         (error "Pattern matching failed") )))
 
 ($def! and ($vau xs e ;; Returns the first falsey value, or the last true one
-    ($if (null? xs) true (begin
+    (if (null? xs) true (begin
         ($def! ex (eval (car xs) e))
         ($def! xs       (cdr xs)   )
-        ($if (null? xs)
+        (if (null? xs)
             ex
-            ($if ex
+            (if ex
                 (eval (cons and xs) e)
                 ex) )))))
 ($def! or ($vau xs e ;; Returns the first truthy value, or the last falsey one
-    ($if (null? xs) false (begin
+    (if (null? xs) false (begin
         ($def! ex (eval (car xs) e))
         ($def! xs       (cdr xs)   )
-        ($if (null? xs) ex
-            ($if ex ex
+        (if (null? xs) ex
+            (if ex ex
                 (eval (cons or xs) e) ))))))
 
 (defvau cond patterns env
     (defn go (ps)
-        ($if (null? ps)
+        (if (null? ps)
             #inert
-            ($if (or (eq? (car ps) 'else) (eval (car ps) env))
+            (if (or (eq? (car ps) 'else) (eval (car ps) env))
                 (eval (cadr ps) env)
                 (go (cddr ps)) )))
     (go patterns) )
 
-(defvau if (c t f) e
-    (eval ($if (eval c e) t f) e))
-
 (defn foldl (f b xs)
-    ($if (null? xs)
+    (if (null? xs)
         b
-        (foldl f (cons (f b (car xs)) (cdr xs))) ))
+        (foldl f (f b (car xs)) (cdr xs)) ))
 
 (defn map (f xs)
     (assert (combiner? f) "map must take a function")
-    ($if (null? xs)
+    (if (null? xs)
         ()
         (cons (f (car xs)) (map f (cdr xs)))))
 
@@ -186,10 +190,10 @@
     ($defn! go xs
         ($def! h (car xs))
         ($def! t (cdr xs))
-        ($if (null? t)
+        (if (null? t)
             h
             (cons h (go . t)) ))
-    ($if (null? args)
+    (if (null? args)
         (error "arity mismatch: list* got 0 arguments")
         (go . args) ))
 
@@ -200,23 +204,23 @@
     ($defn! cat xs-ys
         ($def! xs ( car xs-ys))
         ($def! ys (cadr xs-ys))
-        ($if (null? xs) ys
+        (if (null? xs) ys
             (cons (car xs) (cat (cdr xs) ys))))
-    ($if (null? xss) ()
+    (if (null? xss) ()
         (cat (car xss) (apply concat (cdr xss)))))
 
 ($def! cond ($vau cs env
-    ($if (null? cs) () ;; (cond) == ()
+    (if (null? cs) () ;; (cond) == ()
         (eval
-            ($if (eq? (car cs) 'else)
+            (if (eq? (car cs) 'else)
                 (cadr cs)
-                ($if (eval (car cs) env)
+                (if (eval (car cs) env)
                     (cadr cs)
                     (cons cond (cddr cs)) ))
             env ))))
 
 ($defn! map (f xs)
-    ($if (null? xs) nil
+    (if (null? xs) nil
         (cons
             (    f (car xs))
             (map f (cdr xs)) )))
