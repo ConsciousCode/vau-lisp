@@ -3,6 +3,7 @@ import operator
 import traceback as tb
 from collections import UserDict
 from functools import reduce, wraps
+import inspect
 
 from .parser import Parser, INERT
 from .value import Cons, Environment, Symbol, Operative, Applicative, Builtin, display
@@ -19,8 +20,8 @@ def read_iter(s):
             yield expr
     except StopIteration:
         raise SyntaxError(f"Unexpected EOF before line {p.tokenizer.line}")# from None
-    except GeneratorExit:
-        #print("Generator exit", p.tokenizer.line)
+    except GeneratorExit as e:
+        print("Generator exit", p.tokenizer.line, e.__cause__)
         raise
     except:
         print("Failed before line", p.tokenizer.line)
@@ -32,17 +33,32 @@ def read(s):
 
 vau = Builtin("$vau", Operative)
 
-def e_dotp(k, v):
+def e_dotp(k, v, inc_e=True):
+    sig = inspect.signature(v)
+    count = 0 - inc_e
+    for x in sig.parameters.values():
+        if x.kind == inspect.Parameter.VAR_POSITIONAL:
+            break
+        count += 1
+    else:
+        @wraps(v)
+        def wrap_posonly(e, p):
+            args = Cons.to_list(p)
+            if len(args) != count:
+                raise TypeError(f"{k!r} expected {count} arguments, got {len(args)}: {args}")
+            return v(e, *args)
+        return Builtin(k, wrap_posonly)
+        
     @wraps(v)
-    def wrapper(e, p):
+    def wrap_varargs(e, p):
         return v(e, *Cons.to_iter(p))
-    return Builtin(k, wrapper)
+    return Builtin(k, wrap_varargs)
 
 def dotp(k, v):
     @wraps(v)
-    def wrapper(_, p):
-        return v(*Cons.to_iter(p))
-    return Applicative(Builtin(k, wrapper))
+    def forward(e, *args):
+        return v(*args)
+    return Applicative(e_dotp(k, forward, False))
 
 define = e_dotp("def!", Environment.define)
 
@@ -57,12 +73,13 @@ def eval(expr, env):
         # Catch-all
         
         case Cons(car, cdr):
-            match eval(car, env):
-                #case Cons():
-                #    return eval(Cons(eval(car, env), cdr), env)
-                
-                case Operative(senv, ptree, penv, body) as op:
-                    try:
+            oper = eval(car, env)
+            try:
+                match oper:
+                    #case Cons():
+                    #    return eval(Cons(eval(car, env), cdr), env)
+                    
+                    case Operative(senv, ptree, penv, body) as op:
                         #print("\x1b[7mEval operative\x1b[m", op, car, ptree, body, senv)
                         lenv = Environment({}, senv)
                         if isinstance(expr, Cons) and 'pos' in expr.plist:
@@ -83,52 +100,56 @@ def eval(expr, env):
                             last = eval(expr, lenv)
                             
                         return last
-                    except Exception as e:
-                        note = op.name or "(anonymous)"
-                        if op.line is not None:
-                            note = f"{note} @ {op.line}"
-                            e.add_note(note)
-                        raise
-                
-                case Applicative(combiner):
-                    #print("Applying", combiner, cdr)
-                    if cdr is None:
-                        args = None
-                    else:
-                        ls = []
-                        if isinstance(cdr, Cons):
-                            for cdr in cdr.pairs():
-                                ls.append(eval(cdr.head, env))
-                            args = Cons.from_list(ls, eval(cdr.tail, env))
+                    
+                    case Applicative(combiner):
+                        #print("Applying", combiner, cdr)
+                        if cdr is None:
+                            args = None
                         else:
-                            #print("Not cons:", cdr)
-                            args = eval(cdr, env)
-                            #print("evaluated cdr:", args)
+                            ls = []
+                            if isinstance(cdr, Cons):
+                                for cdr in cdr.pairs():
+                                    ls.append(eval(cdr.head, env))
+                                args = Cons.from_list(ls, eval(cdr.tail, env))
+                            else:
+                                #print("Not cons:", cdr)
+                                args = eval(cdr, env)
+                                #print("evaluated cdr:", args)
+                            
+                            if args is not None:
+                                args.plist['pos'] = expr.plist['pos']
                         
-                        if args is not None:
-                            args.plist['pos'] = expr.plist['pos']
+                        if isinstance(combiner, Cons):
+                            raise TypeError(f"Combiner is a cons: {combiner}")
+                        
+                        return eval(Cons(combiner, args), env)
                     
-                    if isinstance(combiner, Cons):
-                        raise TypeError(f"Combiner is a cons: {combiner}")
+                    case Builtin(fn) as bi:
+                        result = fn(env, cdr)
+                        if bi is define:
+                            while env.line is None:
+                                #print("Env", env)
+                                env = env.tail
+                                if env is None:
+                                    break
+                            else:
+                                if isinstance(result, Applicative):
+                                    #print("Define", env.line)
+                                    result.combiner.line = env.line
+                        return result
                     
-                    return eval(Cons(combiner, args), env)
-                
-                case Builtin(fn) as bi:
-                    result = fn(env, cdr)
-                    if bi is define:
-                        while env.line is None:
-                            #print("Env", env)
-                            env = env.tail
-                            if env is None:
-                                break
-                        else:
-                            if isinstance(result, Applicative):
-                                print("Define", env.line)
-                                result.combiner.line = env.line
-                    return result
-                
-                case na:
-                    raise TypeError(f"Applying a non-combiner: {car} {cdr} ~ {type(na)} {na}")
+                    case na:
+                        raise TypeError(f"Applying a non-combiner: {car} == {type(na).__name__} {na} to {cdr}")
+                        
+            except Exception as e:
+                info = "(anonymous)"
+                if hasattr(car, 'name'):
+                    info = car.name
+                if env.line is not None:
+                    info = f"{info} @ {env.line}"
+                if info != "(anonymous)":
+                    e.add_note(info)
+                raise
         
         case _:
             return expr
@@ -231,6 +252,34 @@ def error(*args):
 def make_env(p=None):
     return Environment({}, p)
 
+def head(x):
+    if isinstance(x, Cons):
+        return x.head
+    raise TypeError(f"Can't get head of {x}")
+
+def tail(e, x):
+    if isinstance(x, Cons):
+        t = x.tail
+        if isinstance(t, Cons):
+            return t
+        return eval(t, e)
+    
+    raise TypeError(f"Tail of non-cons {type(x).__name__} {x}")
+
+def typeof(x):
+    match x:
+        case None: return None
+        case int(): return "int"
+        case str(): return "str"
+        case bool(): return "bool"
+        case Symbol(): return "symbol"
+        case Cons(): return "cons"
+        case Environment(): return "environment"
+        case Operative(): return "operative"
+        case Applicative(): return "applicative"
+        case Builtin(): return "builtin"
+        case _: return f"unknown:{type(x).__name__}"
+
 APPLICATIVES = {
     "+": lambda *args: sum(args),
     "-": lambda *args: -args[0] if len(args) == 1 else reduce(operator.sub, args),
@@ -245,6 +294,7 @@ APPLICATIVES = {
     ">=": lambda *args: all(x >= args[0] for x in args),
     "car": lambda x: x.head,
     "cdr": lambda x: x.tail,
+    "head": head,
     "select": lambda c, t, f: t if c else f,
     "error": error,
     "cons": Cons,
@@ -267,7 +317,8 @@ APPLICATIVES = {
     "eq?" : lambda x, y: x is y or x == y,
     "display": display,
     "make-environment": make_env,
-    "print": print
+    "print": print,
+    "typeof": typeof
 }
 
 OPERATIVES = {
@@ -278,7 +329,8 @@ COMBINERS = {
     **{k: dotp(k, v) for k, v in APPLICATIVES.items()},
     #"list": Applicative(Builtin("list", builtin_list)),
     "$vau": vau,
-    "def!": Applicative(define)
+    "def!": Applicative(define),
+    "tail": Applicative(e_dotp("tail", tail))
 }
 
 class BuiltinEnv(UserDict):
