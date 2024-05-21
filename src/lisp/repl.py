@@ -20,7 +20,7 @@ def read_iter(s):
     except StopIteration:
         raise SyntaxError(f"Unexpected EOF before line {p.tokenizer.line}")# from None
     except GeneratorExit:
-        print("Generator exit", p.tokenizer.line)
+        #print("Generator exit", p.tokenizer.line)
         raise
     except:
         print("Failed before line", p.tokenizer.line)
@@ -30,7 +30,21 @@ def read(s):
     for expr in read_iter(s):
         return expr
 
-STRATEGY = False
+vau = Builtin("$vau", Operative)
+
+def e_dotp(k, v):
+    @wraps(v)
+    def wrapper(e, p):
+        return v(e, *Cons.to_iter(p))
+    return Builtin(k, wrapper)
+
+def dotp(k, v):
+    @wraps(v)
+    def wrapper(_, p):
+        return v(*Cons.to_iter(p))
+    return Applicative(Builtin(k, wrapper))
+
+define = e_dotp("def!", Environment.define)
 
 def eval(expr, env):
     match expr:
@@ -47,24 +61,34 @@ def eval(expr, env):
                 #case Cons():
                 #    return eval(Cons(eval(car, env), cdr), env)
                 
-                case Operative(senv, ptree, penv, body):
-                    #print("\x1b[7mEval operative\x1b[m", car, body, senv)
-                    lenv = Environment({}, senv)
-                    if not lenv.define(ptree.name, cdr):
-                        raise TypeError(f"Couldn't match ptree {display(ptree)} with {display(cdr)}")
-                    if not lenv.define(penv.name, env):
-                        raise TypeError(f"Couldn't match penv {display(penv)} with {display(env)}")
-                    
-                    last = None
-                    if not isinstance(body, Cons):
-                        #print("Non-cons body", body)
-                        body = eval(body, lenv)
-                    
-                    for expr in body:
-                        #print("Eval", expr)
-                        last = eval(expr, lenv)
+                case Operative(senv, ptree, penv, body) as op:
+                    try:
+                        #print("\x1b[7mEval operative\x1b[m", op, car, ptree, body, senv)
+                        lenv = Environment({}, senv)
+                        if isinstance(expr, Cons) and 'pos' in expr.plist:
+                            lenv.line = expr.plist['pos'][0]
                         
-                    return last
+                        if not lenv.defvar(ptree.name, cdr):
+                            raise TypeError(f"Couldn't match ptree {display(ptree)} with {display(cdr)}")
+                        if not lenv.defvar(penv.name, env):
+                            raise TypeError(f"Couldn't match penv {display(penv)} with {display(env)}")
+                        
+                        last = None
+                        if not isinstance(body, Cons):
+                            #print("Non-cons body", body)
+                            body = eval(body, lenv)
+                        
+                        for expr in body:
+                            #print("Eval", expr)
+                            last = eval(expr, lenv)
+                            
+                        return last
+                    except Exception as e:
+                        note = op.name or "(anonymous)"
+                        if op.line is not None:
+                            note = f"{note} @ {op.line}"
+                            e.add_note(note)
+                        raise
                 
                 case Applicative(combiner):
                     #print("Applying", combiner, cdr)
@@ -80,24 +104,31 @@ def eval(expr, env):
                             #print("Not cons:", cdr)
                             args = eval(cdr, env)
                             #print("evaluated cdr:", args)
+                        
+                        if args is not None:
+                            args.plist['pos'] = expr.plist['pos']
                     
                     if isinstance(combiner, Cons):
                         raise TypeError(f"Combiner is a cons: {combiner}")
                     
-                    args.plist['pos'] = expr.plist['pos']
-                    
-                    ex = eval(Cons(combiner, args), env)
-                    if isinstance(ex, Cons):
-                        ex.plist['pos'] = expr.plist['pos']
-                    #print("Got", ex)
-                    #return combiner(env, args)
-                    return ex
+                    return eval(Cons(combiner, args), env)
                 
-                case Builtin(fn):
-                    return fn(env, cdr)
+                case Builtin(fn) as bi:
+                    result = fn(env, cdr)
+                    if bi is define:
+                        while env.line is None:
+                            #print("Env", env)
+                            env = env.tail
+                            if env is None:
+                                break
+                        else:
+                            if isinstance(result, Applicative):
+                                print("Define", env.line)
+                                result.combiner.line = env.line
+                    return result
                 
                 case na:
-                    raise TypeError(f"Applying a non-combiner: {type(na)} {na} {cdr}")
+                    raise TypeError(f"Applying a non-combiner: {car} {cdr} ~ {type(na)} {na}")
         
         case _:
             return expr
@@ -158,8 +189,21 @@ def repl(env=None):
                     pass
                 elif expr[0] == "/":
                     match expr[1:]:
+                        case "#": print(display(env['#']))
                         case "exit": break
                         case "env": print(env)
+                        case "builtins":
+                            b = None
+                            e = env
+                            while e is not None:
+                                if isinstance(e.head, BuiltinEnv):
+                                    b = e
+                                    break
+                                e = e.tail
+                            else:
+                                print("No builtins found")
+                                continue
+                            print(dict(e.head))
                         case _: print(f"Unknown command {expr}")
                 else:
                     parsed = read(expr)
@@ -229,24 +273,12 @@ APPLICATIVES = {
 OPERATIVES = {
 }
 
-def e_dotp(k, v):
-    @wraps(v)
-    def wrapper(e, p):
-        return v(e, *Cons.to_iter(p))
-    return Builtin(k, wrapper)
-
-def dotp(k, v):
-    @wraps(v)
-    def wrapper(_, p):
-        return v(*Cons.to_iter(p))
-    return Applicative(Builtin(k, wrapper))
-
 COMBINERS = {
     **{k: e_dotp(k, v) for k, v in OPERATIVES.items()},
     **{k: dotp(k, v) for k, v in APPLICATIVES.items()},
     #"list": Applicative(Builtin("list", builtin_list)),
-    "$vau": Builtin("$vau", Operative),
-    "def!": Applicative(e_dotp("def!", Environment.define))
+    "$vau": vau,
+    "def!": Applicative(define)
 }
 
 class BuiltinEnv(UserDict):

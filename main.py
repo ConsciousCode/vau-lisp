@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 sys.path.append(f"{Path(__file__).parents[0]}/src")
 
-from lisp import repl, read_iter, eval, ENV, Environment, Parser
+from lisp import repl, read_iter, eval, ENV, Environment
 
 def main():
     env = Environment(ENV)

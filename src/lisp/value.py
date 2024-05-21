@@ -19,6 +19,10 @@ class Inert:
         return "#inert"
 INERT = Inert.__new__(Inert)
 
+class LastValue:
+    def __repr__(self):
+        return "..."
+
 def display(v):
     match v:
         #case Symbol(n): return n
@@ -146,7 +150,10 @@ class Symbol:
 
 MISSING = object()
 class Environment(Cons):
+    line: Optional[int]
+    
     def __init__(self, env:Mapping[str, Any]|None=None, parent:Optional['Environment']=None):
+        self.line = None
         if env is None:
             env = {}
         super().__init__(env, parent)
@@ -172,7 +179,11 @@ class Environment(Cons):
         s = []
         cur = self
         while isinstance(cur, Cons):
-            s.append(display(cur.head))
+            # Special case for last-value #
+            env = cur.head.copy()
+            if env.pop("#", MISSING) is not MISSING:
+                env['#'] = LastValue()
+            s.append(display(env))
             cur = cur.tail
             if cur is None:
                 break
@@ -181,8 +192,15 @@ class Environment(Cons):
         
         return f"Environment({' ~ '.join(s)})"
     
+    def defvar(self, param, value):
+        # Keeps env printouts cleaner
+        if param != "#ignore":
+            self.define(param, value)
+        return INERT
+    
     def define(self, param, value):
-        '''Optimized for lists but supports arbitrary trees and improper lists'''
+        #if self.line is not None:
+        #    print("Define at", self.line)
         match param:
             case str(name):
                 self[name] = value
@@ -192,7 +210,7 @@ class Environment(Cons):
                     value.name = name
                 return INERT
             case _:
-                raise TypeError(f"def! must take a symbol: {type(param).__name__}")
+                raise TypeError(f"def! must take a string: {type(param).__name__}")
 
 class Operative:
     __match_args__ = ("env", "ptree", "penv", "body")
@@ -202,6 +220,7 @@ class Operative:
     ptree: Symbol
     penv: Symbol
     body: Cons
+    line: Optional[int]
     
     def __init__(self, env, args):
         self.name = None
@@ -209,6 +228,7 @@ class Operative:
         self.ptree = args.head
         self.penv = args.tail.head
         self.body = args.tail.tail
+        self.line = None
         
         if isinstance(self.body, Cons):
             if len(self.body) == 0:
@@ -216,10 +236,11 @@ class Operative:
                     raise TypeError("Operative body must have at least one expression")
     
     def __repr__(self):
-        return f"<$vau {self.ptree} {self.penv} {self.body}>"
-        if self.name is None:
-            return "<$vau (anonymous)>"
-        return f"<$vau {self.name}>"
+        #return f"<$vau {self.ptree} {self.penv} {self.body}>"
+        info = self.name or "(anonymous)"
+        if self.line is not None:
+            info = f"{info} @ {self.line}"
+        return f"<$vau {info}>"
 
 class Applicative:
     '''Wrapper for applicatives so (unwrap (wrap appv)) == appv in all cases'''
@@ -241,6 +262,7 @@ class Applicative:
     def unwrap(appv):
         if isinstance(appv, Applicative):
             return appv.combiner
+        return Cons(Symbol("quote"), Cons(appv))
         raise TypeError(f"Expected applicative, got {appv}")
 
 class Builtin:

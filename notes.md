@@ -30,3 +30,8 @@ OP_REM = auto()
 OP_CAT = auto()
 
 Racket's Qi library looks very powerful
+https://web.cs.wpi.edu/~jshutt/dissertation/etd-090110-124904-Shutt-Dissertation.pdf
+https://github.com/Robert-van-Engelen/tinylisp/blob/main/src/tinylisp-commented.c
+https://pengowray.github.io/wasm-ops/
+https://try.scheme.org/
+https://github.com/vito/pumice/ - vau calculus reference implementation

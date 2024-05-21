@@ -14,7 +14,9 @@
 (def! "list" (wrap ($vau x #ignore x)))
 
 (def! "$def!" ($vau nv env
-    (eval (list def! (display (car nv)) (list (unwrap eval) (car (cdr nv)) env)) env) ))
+    (eval (list def!
+        (display (car nv))
+        (list (unwrap eval) (car (cdr nv)) env) ) env) ))
 
 ($def! #inert ($def! nil ())) ;; REPL displays nothing
 ($def! true  (eq? nil  nil))
@@ -47,6 +49,15 @@
             (caddr ctf) )
         env )))
 
+($def! apply (wrap ($vau appv-arg-env static-env
+    ($def! appv ( car appv-arg-env))
+    ($def! arg  (cadr appv-arg-env))
+    ($def! env  (cddr appv-arg-env))
+    (eval (list (unwrap appv) . arg)
+        (if (null? env)
+            (make-environment static-env)
+            env )))))
+
 ($defn! len= ls-len
     ($def! ls  (car ls-len))
     ($def! len (cadr ls-len))
@@ -54,23 +65,13 @@
         (eq? len 0)
         (len= (cdr ls) (- len 1)) ))
 
-($defn! length ls-
-    ($def! ls (car ls-))
+($defn! length ls
+    ($def! ls (car ls))
     ($if (null? ls) 0 (+ 1 (length (cdr ls)))) )
 
-#;($def! if ($vau ctf env
-    ($if (len= ctf 3)
-        (eval (list $if . ctf) env)
-        (error "if applied to too few arguments:" (display ctf)) )))
-
-($defn! apply appv-arg-env static-env
-    ($def! appv  (car appv-arg-env))
-    ($def! arg  (cadr appv-arg-env))
-    ($def! env (caddr appv-arg-env))
-    (eval (cons (unwrap appv) arg)
-        (if (null? opt)
-            (make-environment)
-            (car opt) )))
+($defn! cons ad
+    ($def! dr (cadr ad))
+    (list (car ad) . dr))
 
 ;; Concatenate exactly two lists
 ($defn! concat2 xs-ys
@@ -110,6 +111,7 @@
     ($def! name   (  car nvt))
     ($def! value  ( cadr nvt))
     ($def! target (caddr nvt))
+    ;(apply $def! (list (eval name env) value) ;)
     (eval (list $def! (eval name env) (list (unwrap eval) value env))
         (eval target env))))
 
@@ -206,8 +208,11 @@
         (f (car xs) (foldr f b (cdr xs))) ))
 
 (defn map (f xs)
-    (foldr (lambda (x rest) (cons (f xs) rest)))
-    () xs)
+    (foldr (lambda (x rest) (cons (f xs) rest))
+        () xs))
+
+#;(defn zip xs
+    (foldr ))
 
 ($def! into (wrap ($vau comb-env outer-env
     ($def! comb ( car comb-env))
@@ -235,7 +240,7 @@
         (error "arity mismatch: list* got 0 arguments")
         (go . args) ))
 
-($defn! apply (appv args)
+#;($defn! apply (appv args)
     (eval (cons (unwrap appv) args) (make-environment)))
 
 ($defn! concat xss
