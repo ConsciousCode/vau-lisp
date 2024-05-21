@@ -12,8 +12,13 @@ def main():
         with open(f"./stdlib/{fn}") as f:
             s = f.read()
         
-        for expr in read_iter(s):
-            eval(expr, env)
+        ri = read_iter(s)
+        try:
+            for expr in ri:
+                eval(expr, env)
+        except:
+            print("Failed before line", ri.line)
+            raise
     
     repl(Environment({}, env))
 

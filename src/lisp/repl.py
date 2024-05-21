@@ -8,24 +8,27 @@ import inspect
 from .parser import Parser, INERT
 from .value import Cons, Environment, Symbol, Operative, Applicative, Builtin, display
 
-def read_iter(s):
-    p = Parser(s)
-    try:
-        while True:
-            expr = p.read()
-            if expr is INERT:
-                if p.eof():
-                    break
-                raise SyntaxError(f"Unexpected character: {p.peek().value[0]}")
-            yield expr
-    except StopIteration:
-        raise SyntaxError(f"Unexpected EOF before line {p.tokenizer.line}")# from None
-    except GeneratorExit as e:
-        print("Generator exit", p.tokenizer.line, e.__cause__)
-        raise
-    except:
-        print("Failed before line", p.tokenizer.line)
-        raise
+class read_iter:
+    def __init__(self, s):
+        self.parser = Parser(s)
+    
+    def __iter__(self):
+        try:
+            while True:
+                expr = self.parser.read()
+                if expr is INERT:
+                    if self.parser.eof():
+                        break
+                    raise SyntaxError(f"Unexpected character: {self.parser.peek().value[0]}")
+                yield expr
+        except StopIteration:
+            raise SyntaxError(f"Unexpected EOF before line {self.parser.tokenizer.line}")# from None
+        except:
+            raise
+    
+    @property
+    def line(self):
+        return self.parser.tokenizer.line
 
 def read(s):
     for expr in read_iter(s):
