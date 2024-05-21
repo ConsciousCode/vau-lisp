@@ -39,10 +39,11 @@ def display(v):
 class Cons:
     __match_args__ = ("head", "tail")
     
-    def __init__(self, head, tail=None, plist=None):
+    line = None
+    
+    def __init__(self, head, tail=None):
         self.head = head
         self.tail = tail
-        self.plist = {} if plist is None else plist
     
     def __repr__(self) -> str:
         s = []
@@ -56,12 +57,8 @@ class Cons:
             s.append(f". {cur}")
         
         base = f"({' '.join(s)})"
-        #'''
-        if self.plist:
-            if pos := self.plist.get('pos'):
-                ln, _ = pos
-                return f"{base}@{ln}"
-        #'''
+        if line := getattr(self, 'line', None):
+            return f"{base}@{line}"
         return base
     
     def __len__(self):

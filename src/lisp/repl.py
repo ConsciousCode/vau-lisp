@@ -66,6 +66,9 @@ def dotp(k, v):
 define = e_dotp("def!", Environment.define)
 
 def eval(expr, env):
+    if not isinstance(env, Environment):
+        raise TypeError(f"Environment expected, got {type(env).__name__}: {env}")
+    
     match expr:
         # Symbol lookup
         case Symbol(name):
@@ -76,6 +79,9 @@ def eval(expr, env):
         # Catch-all
         
         case Cons(car, cdr):
+            if env.line is None:
+                env.line = expr.line
+            
             oper = eval(car, env)
             try:
                 match oper:
@@ -85,8 +91,8 @@ def eval(expr, env):
                     case Operative(senv, ptree, penv, body) as op:
                         #print("\x1b[7mEval operative\x1b[m", op, car, ptree, body, senv)
                         lenv = Environment({}, senv)
-                        if isinstance(expr, Cons) and 'pos' in expr.plist:
-                            lenv.line = expr.plist['pos'][0]
+                        if isinstance(expr, Cons):
+                            lenv.line = expr.line
                         
                         if not lenv.defvar(ptree.name, cdr):
                             raise TypeError(f"Couldn't match ptree {display(ptree)} with {display(cdr)}")
@@ -98,7 +104,7 @@ def eval(expr, env):
                             #print("Non-cons body", body)
                             body = eval(body, lenv)
                         
-                        for expr in body:
+                        for expr in Cons.to_iter(body):
                             #print("Eval", expr)
                             last = eval(expr, lenv)
                             
@@ -120,7 +126,7 @@ def eval(expr, env):
                                 #print("evaluated cdr:", args)
                             
                             if args is not None:
-                                args.plist['pos'] = expr.plist['pos']
+                                args.line = expr.line
                         
                         if isinstance(combiner, Cons):
                             raise TypeError(f"Combiner is a cons: {combiner}")
@@ -129,29 +135,14 @@ def eval(expr, env):
                     
                     case Builtin(fn) as bi:
                         result = fn(env, cdr)
-                        if bi is define:
-                            while env.line is None:
-                                #print("Env", env)
-                                env = env.tail
-                                if env is None:
-                                    break
-                            else:
-                                if isinstance(result, Applicative):
-                                    #print("Define", env.line)
-                                    result.combiner.line = env.line
                         return result
                     
                     case na:
                         raise TypeError(f"Applying a non-combiner: {car} == {type(na).__name__} {na} to {cdr}")
                         
             except Exception as e:
-                info = "(anonymous)"
-                if hasattr(car, 'name'):
-                    info = car.name
-                if env.line is not None:
-                    info = f"{info} @ {env.line}"
-                if info != "(anonymous)":
-                    e.add_note(info)
+                if line := getattr(expr, 'line', None):
+                    e.add_note(f"{getattr(car, 'name', '(anonymous)')} @ {line}")
                 raise
         
         case _:
@@ -276,12 +267,25 @@ def typeof(x):
         case str(): return "str"
         case bool(): return "bool"
         case Symbol(): return "symbol"
-        case Cons(): return "cons"
         case Environment(): return "environment"
+        case Cons(): return "cons"
         case Operative(): return "operative"
         case Applicative(): return "applicative"
         case Builtin(): return "builtin"
         case _: return f"unknown:{type(x).__name__}"
+
+def safe_getattr(x, k):
+    try:
+        return getattr(x, k)
+    except AttributeError:
+        return None
+
+def safe_setattr(x, k, v):
+    try:
+        setattr(x, k, v)
+    except AttributeError:
+        print(f"Setting {type(x).__name__} {x} failed", k, v)
+    return x
 
 APPLICATIVES = {
     "+": lambda *args: sum(args),
@@ -321,7 +325,9 @@ APPLICATIVES = {
     "display": display,
     "make-environment": make_env,
     "print": print,
-    "typeof": typeof
+    "typeof": typeof,
+    "setattr!": safe_setattr,
+    "getattr": safe_getattr,
 }
 
 OPERATIVES = {
@@ -332,8 +338,7 @@ COMBINERS = {
     **{k: dotp(k, v) for k, v in APPLICATIVES.items()},
     #"list": Applicative(Builtin("list", builtin_list)),
     "$vau": vau,
-    "def!": Applicative(define),
-    "tail": Applicative(e_dotp("tail", tail))
+    "def!": Applicative(define)
 }
 
 class BuiltinEnv(UserDict):

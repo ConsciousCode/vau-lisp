@@ -13,10 +13,14 @@
 (def! "quote" ($vau x #ignore (car x)))
 (def! "list" (wrap ($vau x #ignore x)))
 
+(def! "bind-line!" (wrap ($vau e-x #ignore
+    (setattr! (car (cdr e-x)) "line" (getattr (car e-x) "line")) )))
+
 (def! "$def!" ($vau nv env
-    (eval (list def!
-        (display (head nv))
-        (list (unwrap eval) (head (tail nv)) env) ) env) ))
+    (bind-line! env
+        (eval (list def!
+            (display (car nv))
+            (list (unwrap eval) (car (cdr nv)) env) ) env) )))
 
 ($def! #inert ($def! nil ())) ;; REPL displays nothing
 ($def! true  (eq? nil  nil))
@@ -28,11 +32,12 @@
     ((eval (list $vau #ignore #ignore . body) env)) ))
 
 ($def! $defn! ($vau npb env
-    ($def! name (head npb))
-    ($def! pb   (tail npb))
-    ($def! parm (head  pb))
-    ($def! body (tail  pb))
-    (eval (list $def! name (list wrap (list $vau parm #ignore . body))) env) ))
+    ($def! name (car npb))
+    ($def! pb   (cdr npb))
+    ($def! parm (car  pb))
+    ($def! body (cdr  pb))
+    (bind-line! env
+        (eval (list $def! name (list wrap (list $vau parm #ignore . body))) env) )))
 
 ($defn! null? x (eq? nil . x))
 
@@ -45,10 +50,8 @@
 
 (def! "head" (wrap ($vau x #ignore (car . x))))
 (def! "tail" (wrap ($vau x env
-    #;(print "tail" x)
     (def! "x" (cdr . x))
     (if (combiner? x) (x) x) )))
-;    (eval (select (cons? x) (unwrap x) (list (unwrap x))) env)
 
 ($defn! head2 xs       (head (tail . xs)))
 ($defn! tail2 xs       (tail (tail . xs)))
@@ -58,13 +61,13 @@
 #;($defn! caddr xs (head (tail (tail . xs))))
 
 ($def! apply (wrap ($vau appv-arg-env static-env
-    ($def! appv ( head appv-arg-env))
+    ($def! appv (head  appv-arg-env))
     ($def! arg  (head2 appv-arg-env))
     ($def! env  (tail2 appv-arg-env))
     (eval (list (unwrap appv) . arg)
         (if (null? env)
             (make-environment static-env)
-            env )))))
+            (head env) )))))
 
 ($defn! cons ad
     ($def! dr (head2 ad))
@@ -158,20 +161,83 @@
     (wrap (eval (list vau ptree #ignore . body) env)) ))
 
 ($def! defvau (vau (name . rest) env
-    (eval (list $def! name (list vau . rest)) env) ))
+    (bind-line! env
+        (eval (list $def! name (list vau . rest)) env) )))
 
 ($def! defn (vau (name ptree . body) env
-    (eval (list $def! name (list lambda ptree . body)) env) ))
+    (bind-line! env
+        (eval (list $def! name (list lambda ptree . body)) env) )))
 
 ($def! def (vau (ptree values) env
+    (print "def" ptree values)
     (if (eval (list match ptree values) env)
         #inert
-        (error "Pattern matching failed") )))
+        (error "Pattern matching failed:" (display ptree)) )))
 
-(defvau thunk (f) env
-    (lambda () (eval f env)))
+(defvau thunk fs env
+    (eval (list begin . fs) env))
 
-(defn copy (xs)
+(defn foldl (f b xs)
+    (if (null? xs)
+        b
+        (foldl f (f b (head xs)) (tail xs)) ))
+
+(defn foldr (f b xs)
+    (if (null? xs)
+        b
+        (f (head xs) (foldr f b (tail xs))) ))
+
+(defn map (f xs)
+    (if (null? xs)
+        ()
+        (cons (f (head xs)) (thunk (map f (tail xs)))) ))
+
+(defvau each (var iter . body) env
+    (def local (make-environment env))
+    (print "typeof" (typeof local))
+    (defn go (xs)
+        (print "each" xs)
+        (if (null? xs)
+            #inert
+            (begin
+                (apply def (list var (head xs)) local)
+                (eval (cons begin body) local)
+                (go (tail xs)) )))
+    (go (eval iter env)) )
+
+(print "test each")
+(each x (list 1 2 3)
+    (print x)
+    (print (* 2 x)) )
+
+(defvau let (nv body) env
+    (def local (make-environment env))
+    (print local)
+    (apply map (list (lambda (x) (print "apply in map?" x) (def . x)) nv) local)
+    (eval body local) )
+
+(print "test let")
+(let
+    ( (a 0)
+      ((x . y) (list 1 2 3)) )
+    (print a x y) )
+
+(defvau which (value . cs) env
+    (if (null? cs)
+        #inert
+        (begin
+            (def (cond case . cs) cs)
+            (if (match cond (eval value env)
+                (eval case env)
+                (which value . cs) )))))
+
+(print "test which"
+(which 3
+    (a . b) 4
+    (a b) 5
+    x 4 )
+)
+(defn copy (xs) ;; Unlazy a list
     (if (null? xs)
         ()
         (cons (head xs) (copy (tail xs))) ))
@@ -202,21 +268,6 @@
                 (go (tail2 ps)) )))
     (go patterns) )
 
-(defn foldl (f b xs)
-    (if (null? xs)
-        b
-        (foldl f (f b (head xs)) (tail xs)) ))
-
-(defn foldr (f b xs)
-    (if (null? xs)
-        b
-        (f (head xs) (foldr f b (tail xs))) ))
-
-(defn map (f xs)
-    (if (null? xs)
-        ()
-        (cons (f (head xs)) (thunk (map f (tail xs)))) ))
-
 (defn any? (p xs)
     (foldl (lambda (acc x) (or acc (p x))) false xs))
 
@@ -227,9 +278,6 @@
     (if (any? null? xs)
         ()
         (cons (map head xs) (thunk (apply zip (map tail xs)))) ))
-
-#;(
-;; Execute a combiner in a given environment
 
 ($defn! list* args
     ($defn! go xs
@@ -242,17 +290,7 @@
         (error "arity mismatch: list* got 0 arguments")
         (go . args) ))
 
-#;($defn! apply (appv args)
-    (eval (cons (unwrap appv) args) (make-environment)))
-
-($defn! concat xss
-    ($defn! cat xs-ys
-        ($def! xs ( head xs-ys))
-        ($def! ys (head2 xs-ys))
-        (if (null? xs) ys
-            (cons (head xs) (cat (tail xs) ys))))
-    (if (null? xss) ()
-        (cat (head xss) (apply concat (tail xss)))))
+(defn concat xss (foldl concat2 () xss))
 
 ($def! cond ($vau cs env
     (if (null? cs) () ;; (cond) == ()
@@ -264,23 +302,11 @@
                     (cons cond (tail2 cs)) ))
             env ))))
 
-($defn! map (f xs)
-    (if (null? xs) nil
-        (cons
-            (    f (head xs))
-            (map f (tail xs)) )))
-
-($def! $lambda ($vau ptree-body env
-    ($def! ptree (head ptree-body))
-    ($def! body  (tail ptree-body))
-    (wrap (eval (list $vau ptree #ignore . body) env))))
-
 ($def! $let ($vau (bindings . body) env
     (id (cons
         (list $lambda (map head bindings) . body)
         (map tail bindings)) env)))
 
+(defn inc (x) (+ 1 x))
 ($defn! id (x . #ignore) x)
 ($defn! const (c) ($lambda #ignore c))
-;($defn! zip ())
-)

@@ -118,7 +118,7 @@ class Parser:
         if tok := self.maybe('('):
             expr = self.read_list()
             if isinstance(expr, Cons):
-                expr.plist = {"pos": (tok.line, tok.col)}
+                expr.line = tok.line
             return expr
         elif tok := self.maybe("'"):
             return Cons(Symbol("quote"), Cons(self.read()))
