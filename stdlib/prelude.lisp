@@ -6,7 +6,9 @@
 ;; - $vau - binds parameters to a single name, unpacking is manual
 ;; - wrap - wrap a combiner as an applicative
 ;; - unwrap - remove an applicative wrapping
+;; - eval - evaluate within an environment
 ;; - car/tail - operators for decomposing pairs
+;; - puts/getc - stdin/out
 
 ;; Note: #ignore doesn't actually *do* anything until way later when we define
 ;;  pattern matching. Before that point, it's merely a naming convention.
@@ -42,16 +44,17 @@
 ($defn! null? x (eq? nil . x))
 
 ($def! if ($vau ctf env
+    ($def! tf (cdr ctf))
     (eval
         (select (eval (car ctf) env)
-            (car (cdr ctf))
-            (car (cdr (cdr ctf))) )
+            (car tf)
+            (car (cdr tf)) )
         env )))
 
 (def! "head" (wrap ($vau x #ignore (car . x))))
 (def! "tail" (wrap ($vau x env
     (def! "x" (cdr . x))
-    (if (combiner? x) (x) x) )))
+    (if (combiner? x) (x) x) ))) ;; Support for lazy lists
 
 ($defn! head2 xs       (head (tail . xs)))
 ($defn! tail2 xs       (tail (tail . xs)))
@@ -81,29 +84,61 @@
         ys
         (cons (head xs) (concat2 (tail xs) ys)) ))
 
+($def! when ($vau cb env
+    (if (eval (head cb) env)
+        (apply begin (tail cb) env)
+        #inert )))
+
+($def! unless ($vau cb env
+    (if (eval (head cb) env)
+        #inert
+        (apply begin (tail cb) env) )))
+
+($defn! assert cond-msg
+    (unless (head cond-msg)
+        (error (head2 cond-msg)) ))
+
+($def! and2 ($vau x-y env
+    ($def! x (eval (head x-y) env))
+    (if x (eval (head2 x-y) env) x)))
+
 ;; Unpacks values into parameter trees, returning a list of name-value pairs
 ;; (ns vs) -> ((n . v)*) | #inert
-($defn! unpack ns-vs
+;; (case pred?) and (case pred? p) check a predicate and optionally name the result
+;; '() special case for nil
+;; Quoting evaluates the quoted value and checks if it's true. Doesn't advance value iterator.
+($def! unpack (wrap ($vau ns-vs env
     ($def! ns ( head ns-vs))
     ($def! vs (head2 ns-vs))
     (if (cons? ns)
-        (if (cons? vs)
-            (begin
-                ($def! left (unpack (head ns) (head vs)))
-                (if (eq? left #inert)
-                    #inert
-                    (begin
-                        ($def! right (unpack (tail ns) (tail vs)))
-                        (if (eq? right #inert)
-                            #inert
-                            (concat2 left right) ))))
-            #inert)
+        (begin
+            ($def! ns-head (head ns))
+            ($def! ns-tail (tail ns))
+            (if (eq? ns-head 'case)
+                ;; Predicate eg (case empty? x)
+                (when ((eval (head ns-tail) env) vs)
+                    (if (null? (tail ns-tail))
+                        () ;; Unnamed
+                        (list (cons (head (tail ns-tail)) vs)) )) ;; Named
+                (if (and2 (cons? ns-head) (eq? (head ns-head) 'quote))
+                    (if (null? (tail ns-head))
+                        (when (null? vs) ())
+                        (when (eval (head2 ns-head) env)
+                            (unpack ns-tail vs) ))
+                    ;; List/cons
+                    (when (cons? vs)
+                        ($def! left (unpack ns-head (head vs)))
+                        (unless (eq? left #inert)
+                            ($def! right (unpack ns-tail (tail vs)))
+                            (unless (eq? right #inert)
+                                (concat2 left right) ))))))
         (if (symbol? ns)
+            ;; Symbol
             (if (eq? ns #ignore)
                 ()
                 (list (cons ns vs)) )
-            (if (eq? ns vs)
-                () #inert ))))
+            ;; Constant
+            (when (eq? ns vs) ()) )))))
 
 ;; Set a name to a value in an environment
 ;; (this is very hard to inline correctly)
@@ -114,11 +149,6 @@
     ;(apply $def! (list (eval name env) value) ;)
     (eval (list $def! (eval name env) (list (unwrap eval) value env))
         (eval target env))))
-
-($defn! assert cond-msg
-    (if (head cond-msg)
-        #inert
-        (error (head2 cond-msg)) ))
 
 ;; Takes a list of name-value pairs and assigns them in an environment
 ($defn! set-list! nvs-e
@@ -140,14 +170,13 @@
         false  ;; Match failed
         (begin ;; Match succeeded, define everything
             (set-list! nvs env)
-            true)) ))
+            true ))))
 
 ;; We finally have enough machinery to redefine our primitives to be nicer
 
 ($def! vau ($vau peb static-env
-    ($def! ptree (head peb))
-    ($def! penv (head2 peb))
-    ($def! body (tail2 peb))
+    (unless (match (ptree penv . body) peb)
+        (error "Pattern match failed:" (display (ptree))))
     ($vau args env
         ($def! local-env (make-environment static-env))
         (if (apply match (list ptree (unwrap args)) local-env)
@@ -158,7 +187,7 @@
 
 ;; Now we have parameter unpacking
 ($def! lambda (vau (ptree . body) env
-    (wrap (eval (list vau ptree #ignore . body) env)) ))
+    (wrap (apply vau (list ptree #ignore . body) env)) ))
 
 ($def! defvau (vau (name . rest) env
     (bind-line! env
@@ -169,9 +198,46 @@
         (eval (list $def! name (list lambda ptree . body)) env) )))
 
 ($def! def (vau (ptree values) env
-    (if (eval (list match ptree values) env)
-        #inert
+    (unless (eval (list match ptree values) env)
         (error "Pattern matching failed:" (display ptree)) )))
+
+(defn unfold (p h t x)
+    (if (p x)
+        ()
+        (cons (h x) (unfold p h t (t x))) ))
+
+(defn int->string ((case int? x))
+    (defn go (n acc)
+        (if (> n 0)
+            (let (((n d) (divmod n 10)))
+                (go n (cons (+ d (car "0")) acc)) )
+            acc ))
+    (go x ()) )
+
+(defn list-cons (xs)
+    (if (cons? xs)
+        (cons xs (list-cons (tail xs)))
+        xs ))
+
+(defn stream (yield . xs)
+    (which xs
+        () #inert
+        (x . xs) (begin
+            (yield "(")
+            (stream yield x)
+            (each x (list-cons xs)
+                (yield " ")
+                (stream yield (head x)) )
+            (unless (null? x)
+                (yield " . ")
+                (stream yield x) )
+            (yield ")") )
+        (case bool?) (yield (if xs "true" "false"))
+        (case int?) (yield (int->string xs))
+        (case symbol?) (yield (display xs))
+        (case applicative?) (yield "<applicative>")
+        (case combiner?) (yield "<$vau>")
+        else (yield "<unknown>") ))
 
 (defvau thunk fs env
     (eval (list begin . fs) env))
@@ -203,13 +269,12 @@
     (eval (cons begin body) local) )
 
 (defvau each (var iter . body) env
-    (def local (make-environment env))
     (defn go (xs)
         (if (null? xs)
             #inert
             (begin
-                (apply def (list var (unwrap (head xs))) local)
-                (eval (cons begin body) local)
+                (apply def (list var (unwrap (head xs))) env)
+                (eval (cons begin body) env)
                 (go (tail xs)) )))
     (go (eval iter env)) )
 
@@ -220,7 +285,7 @@
             #inert
             (begin
                 (def (cond case . cs) cs)
-                (if (match cond value)
+                (if (or (eq? case 'else) (match cond value))
                     (eval case env)
                     (go . cs) ))))
     (go . cs))
@@ -280,7 +345,15 @@
 
 (defn inc (x) (+ 1 x))
 (defn id (x . #ignore) x)
-(defn const (c) ($lambda #ignore c))
+(defn const (c) (lambda #ignore c))
 
 ;; Ok now let's make a meta-circular evaluator
 
+(defn mc-interpreter ()
+    (rep-loop (mc-make-initial-env)))
+
+(defn rep-loop (env)
+    (display "ϝ>> ")
+    (write (mc-eval (read) env))
+    (print)
+    (rep-loop env) )

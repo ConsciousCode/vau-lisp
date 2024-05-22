@@ -1,5 +1,6 @@
 import readline
 import operator
+import sys
 import traceback as tb
 from collections import UserDict
 from functools import reduce, wraps
@@ -7,6 +8,9 @@ import inspect
 
 from .parser import Parser, INERT
 from .value import Cons, Environment, Symbol, Operative, Applicative, Builtin, display
+
+def typename(x):
+    return type(x).__name__
 
 class read_iter:
     def __init__(self, s):
@@ -67,7 +71,7 @@ define = e_dotp("def!", Environment.define)
 
 def eval(expr, env):
     if not isinstance(env, Environment):
-        raise TypeError(f"Environment expected, got {type(env).__name__}: {env}")
+        raise TypeError(f"Environment expected, got {typename(env)}: {env}")
     
     match expr:
         # Symbol lookup
@@ -138,7 +142,7 @@ def eval(expr, env):
                         return result
                     
                     case na:
-                        raise TypeError(f"Applying a non-combiner: {car} == {type(na).__name__} {na} to {cdr}")
+                        raise TypeError(f"Applying a non-combiner: {car} == {typename(na)} {na} to {cdr}")
                         
             except Exception as e:
                 if line := getattr(expr, 'line', None):
@@ -258,7 +262,7 @@ def tail(e, x):
             return t
         return eval(t, e)
     
-    raise TypeError(f"Tail of non-cons {type(x).__name__} {x}")
+    raise TypeError(f"Tail of non-cons {typename(x)} {x}")
 
 def typeof(x):
     match x:
@@ -272,7 +276,7 @@ def typeof(x):
         case Operative(): return "operative"
         case Applicative(): return "applicative"
         case Builtin(): return "builtin"
-        case _: return f"unknown:{type(x).__name__}"
+        case _: return f"unknown:{typename(x)}"
 
 def safe_getattr(x, k):
     try:
@@ -284,8 +288,24 @@ def safe_setattr(x, k, v):
     try:
         setattr(x, k, v)
     except AttributeError:
-        print(f"Setting {type(x).__name__} {x} failed", k, v)
+        print(f"Setting {typename(x)} {x} failed", k, v)
     return x
+
+def safe_car(x):
+    match x:
+        case Cons(ar, dr): return ar
+        case str(): return ord(x[0])
+        case list(): return x[0]
+        case tuple(): return x[0]
+    raise TypeError(f"Can't get car of {display(x)}")
+
+def safe_cdr(x):
+    match x:
+        case Cons(ar, dr): return dr
+        case str(): return x[1:]
+        case list(): return x[1:]
+        case tuple(): return x[1:]
+    raise TypeError(f"Can't get cdr of {display(x)}")
 
 APPLICATIVES = {
     "+": lambda *args: sum(args),
@@ -293,14 +313,14 @@ APPLICATIVES = {
     "*": lambda *args: reduce(operator.mul, args, 1),
     "/": lambda *args: 1/args[0] if len(args) == 1 else reduce(operator.truediv, args),
     "%": lambda *args: reduce(operator.mod, args),
-    "==": lambda *args: all(x == args[0] for x in args),
-    "!=": lambda *args: any(x != args[0] for x in args),
-    "<": lambda *args: all(x < args[0] for x in args),
-    ">": lambda *args: all(x > args[0] for x in args),
-    "<=": lambda *args: all(x <= args[0] for x in args),
-    ">=": lambda *args: all(x >= args[0] for x in args),
-    "car": lambda x: x.head,
-    "cdr": lambda x: x.tail,
+    "==": lambda x, y: x == y,
+    "!=": lambda x, y: x != y,
+    "<": lambda x, y: x < y,
+    ">": lambda x, y: x > y,
+    "<=": lambda x, y: x <= y,
+    ">=": lambda x, y: x >= y,
+    "car": safe_car,
+    "cdr": safe_cdr,
     "head": head,
     "select": lambda c, t, f: t if c else f,
     "error": error,
@@ -325,9 +345,12 @@ APPLICATIVES = {
     "display": display,
     "make-environment": make_env,
     "print": print,
+    "puts": print,
+    "gets": lambda n: sys.stdin.read(n),
     "typeof": typeof,
     "setattr!": safe_setattr,
     "getattr": safe_getattr,
+    "divmod": lambda n, d: Cons.from_list(divmod(n, d)),
 }
 
 OPERATIVES = {
