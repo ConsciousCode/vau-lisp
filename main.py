@@ -16,8 +16,8 @@ def main():
         try:
             for expr in ri:
                 eval(expr, env)
-        except:
-            print("Failed before line", ri.line)
+        except Exception as e:
+            e.add_note(f"Failed before line {ri.line}")
             raise
     
     repl(Environment({}, env))

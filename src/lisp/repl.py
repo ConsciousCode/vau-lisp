@@ -307,6 +307,12 @@ def safe_cdr(x):
         case tuple(): return x[1:]
     raise TypeError(f"Can't get cdr of {display(x)}")
 
+def puts(x):
+    if isinstance(x, Cons):
+        x = ''.join(map(chr, x))
+    print(x, end='')
+    return INERT
+
 APPLICATIVES = {
     "+": lambda *args: sum(args),
     "-": lambda *args: -args[0] if len(args) == 1 else reduce(operator.sub, args),
@@ -345,7 +351,7 @@ APPLICATIVES = {
     "display": display,
     "make-environment": make_env,
     "print": print,
-    "puts": print,
+    "puts": puts,
     "gets": lambda n: sys.stdin.read(n),
     "typeof": typeof,
     "setattr!": safe_setattr,
