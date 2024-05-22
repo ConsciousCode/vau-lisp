@@ -230,7 +230,7 @@
         ()
         (cons (head xs) (copy (tail xs))) ))
 
-($def! and ($vau xs e ;; Returns the first falsey value, or the last true one
+(defvau and xs e ;; Returns the first falsey value, or the last true one
     (if (null? xs) true (begin
         ($def! ex (eval (head xs) e))
         ($def! xs       (tail xs)   )
@@ -238,14 +238,14 @@
             ex
             (if ex
                 (eval (cons and xs) e)
-                ex) )))))
-($def! or ($vau xs e ;; Returns the first truthy value, or the last falsey one
+                ex) ))))
+(defvau or xs e ;; Returns the first truthy value, or the last falsey one
     (if (null? xs) false (begin
         ($def! ex (eval (head xs) e))
         ($def! xs       (tail xs)   )
         (if (null? xs) ex
             (if ex ex
-                (eval (cons or xs) e) ))))))
+                (eval (cons or xs) e) )))))
 
 (defvau cond patterns env
     (defn go (ps)
@@ -267,10 +267,8 @@
         ()
         (cons (map head xs) (thunk (apply zip (map tail xs)))) ))
 
-($defn! list* args
-    ($defn! go xs
-        ($def! h (head xs))
-        ($def! t (tail xs))
+(defn list* args
+    (defn go (h . t)
         (if (null? t)
             h
             (cons h (go . t)) ))
@@ -280,21 +278,9 @@
 
 (defn concat xss (foldl concat2 () xss))
 
-($def! cond ($vau cs env
-    (if (null? cs) () ;; (cond) == ()
-        (eval
-            (if (eq? (head cs) 'else)
-                (head2 cs)
-                (if (eval (head cs) env)
-                    (head2 cs)
-                    (cons cond (tail2 cs)) ))
-            env ))))
-
-($def! $let ($vau (bindings . body) env
-    (id (cons
-        (list $lambda (map head bindings) . body)
-        (map tail bindings)) env)))
-
 (defn inc (x) (+ 1 x))
-($defn! id (x . #ignore) x)
-($defn! const (c) ($lambda #ignore c))
+(defn id (x . #ignore) x)
+(defn const (c) ($lambda #ignore c))
+
+;; Ok now let's make a meta-circular evaluator
+
