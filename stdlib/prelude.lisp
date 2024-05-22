@@ -150,7 +150,7 @@
     ($def! body (tail2 peb))
     ($vau args env
         ($def! local-env (make-environment static-env))
-        (if (eval (list match ptree (cons (unwrap list) args)) local-env)
+        (if (apply match (list ptree (unwrap args)) local-env)
             (begin
                 (set! penv env local-env)
                 (eval (cons begin body) local-env))
@@ -169,7 +169,6 @@
         (eval (list $def! name (list lambda ptree . body)) env) )))
 
 ($def! def (vau (ptree values) env
-    (print "def" ptree values)
     (if (eval (list match ptree values) env)
         #inert
         (error "Pattern matching failed:" (display ptree)) )))
@@ -192,51 +191,40 @@
         ()
         (cons (f (head xs)) (thunk (map f (tail xs)))) ))
 
-(defvau each (var iter . body) env
+(defvau let (nv . body) env
     (def local (make-environment env))
-    (print "typeof" (typeof local))
     (defn go (xs)
-        (print "each" xs)
         (if (null? xs)
             #inert
             (begin
-                (apply def (list var (head xs)) local)
+                (apply def (head xs) local)
+                (go (tail xs)) )))
+    (go nv)
+    (eval (cons begin body) local) )
+
+(defvau each (var iter . body) env
+    (def local (make-environment env))
+    (defn go (xs)
+        (if (null? xs)
+            #inert
+            (begin
+                (apply def (list var (unwrap (head xs))) local)
                 (eval (cons begin body) local)
                 (go (tail xs)) )))
     (go (eval iter env)) )
 
-(print "test each")
-(each x (list 1 2 3)
-    (print x)
-    (print (* 2 x)) )
-
-(defvau let (nv body) env
-    (def local (make-environment env))
-    (print local)
-    (apply map (list (lambda (x) (print "apply in map?" x) (def . x)) nv) local)
-    (eval body local) )
-
-(print "test let")
-(let
-    ( (a 0)
-      ((x . y) (list 1 2 3)) )
-    (print a x y) )
-
 (defvau which (value . cs) env
-    (if (null? cs)
-        #inert
-        (begin
-            (def (cond case . cs) cs)
-            (if (match cond (eval value env)
-                (eval case env)
-                (which value . cs) )))))
+    (def value (eval value env))
+    (defn go cs
+        (if (null? cs)
+            #inert
+            (begin
+                (def (cond case . cs) cs)
+                (if (match cond value)
+                    (eval case env)
+                    (go . cs) ))))
+    (go . cs))
 
-(print "test which"
-(which 3
-    (a . b) 4
-    (a b) 5
-    x 4 )
-)
 (defn copy (xs) ;; Unlazy a list
     (if (null? xs)
         ()
