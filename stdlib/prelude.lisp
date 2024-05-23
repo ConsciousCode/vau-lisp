@@ -7,7 +7,7 @@
 ;; - wrap - wrap a combiner as an applicative
 ;; - unwrap - remove an applicative wrapping
 ;; - eval - evaluate within an environment
-;; - car/tail - operators for decomposing pairs
+;; - car/cdr - operators for decomposing pairs
 ;; - puts/gets - stdin/out
 
 (print "Begin")

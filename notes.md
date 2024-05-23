@@ -35,3 +35,5 @@ https://github.com/Robert-van-Engelen/tinylisp/blob/main/src/tinylisp-commented.
 https://pengowray.github.io/wasm-ops/
 https://try.scheme.org/
 https://github.com/vito/pumice/ - vau calculus reference implementation
+
+The original Python interpreter took over 10 seconds just to run the prelude because of how many layers of abstraction I implemented in lisp, so I reimplemented in C. This led to a debuggability problem, though; I no longer had the ability to assign arbitrary properties like parsing metadata. To get around this, I came up with the concept of "meta-cons", which is a specially annotated cons which passes operations like car/cdr to its signified value (car) but has additional operations which allow direct access to the metadata (cdr).
