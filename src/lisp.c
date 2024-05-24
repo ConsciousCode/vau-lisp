@@ -3,23 +3,35 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdbool.h>
+#include <setjmp.h>
 
-#define MEM_SIZE 65536
+/// Constants ///
+#define MAX_ATOMS 65536
+#define MAX_CELLS (65536/sizeof(Cell)/2)
 #define TYPE_BITS 3
 #define ORD_BITS (sizeof(Value)*8 - TYPE_BITS)
 #define ORD_MASK ~(((1<<TYPE_BITS) - 1) << (sizeof(Value)*8 - TYPE_BITS))
 #define BUFFER_SIZE 40
 
+#define car_(v) cells[ordinal(v)].car
+#define cdr_(v) cells[ordinal(v)].cdr
+
+#define UNUSED __attribute__((unused))
+
+/// Types ///
 typedef enum {
     T_CONS = 0,
-    T_INT,
     T_SYMBOL,
-    T_BUILTIN,
-    T_CLOSURE,
-    T_META // Metadata
+    T_INT,
+    T_CAPSULE,
+    T_BUILTIN
 } ValueType;
 
 typedef int32_t Value;
+
+typedef struct {
+    Value car, cdr;
+} Cell;
 
 typedef struct {
     const char* name;
@@ -31,114 +43,127 @@ BuiltinEntry get_builtin(int ord);
 ValueType type(Value v) {
     return v >> ORD_BITS;
 }
-
 int ordinal(Value v) {
-    Value x = v & ORD_MASK;
-    // Sign extend
-    return (v & (1<<ORD_BITS))? x | ~ORD_MASK : x;
+    return (v & ORD_MASK) | ((v & (1<<ORD_BITS))? ~ORD_MASK : 0);
 }
 
+/// Global variables ///
 const char *errmsg = 0;
-const Value nil = 0;
-Value sym_inert, sym_ignore, sym_err, sym_quote, sym_name, sym_line;
+const Value nil = 0, unbound = T_SYMBOL;
+Value sym_inert, sym_ignore, sym_quote, sym_vau, sym_wrap, sym_unwrap, sym_meta, sym_tru;
+char atoms[MAX_ATOMS];
+Cell a_cells[MAX_CELLS], b_cells[MAX_CELLS];
+Cell *fromspace = a_cells, *tospace = b_cells, *cells = a_cells;
+size_t hp = 0, sp = 0; // Heap and stack pointer
+jmp_buf toplevel;
 
-Value memory[MEM_SIZE]; // Shared memory for cells and atoms
-int hp = 0, sp = MEM_SIZE; // Heap and stack pointers
-
-_Noreturn void panic(const char *msg, ...) {
-    va_list args;
-    va_start(args, msg);
-    vfprintf(stderr, msg, args);
-    exit(1);
+_Noreturn void error(const char *msg, ...) {
+    if(msg) {
+        va_list args;
+        va_start(args, msg);
+        vfprintf(stderr, msg, args);
+    }
+    longjmp(toplevel, 1);
 }
 
-Value error(const char *msg) {
-    errmsg = msg;
-    return sym_err;
-}
-
-Value get_unmeta(Value v) {
-    return type(v) == T_META ? memory[ordinal(v)] : v;
-}
-Value get_meta(Value v) {
-    return type(v) == T_META ? memory[ordinal(v) + 1] : nil;
+/**
+ * Value type is represented using cons.
+**/
+bool iscons(Value v) {
+    return v && type(v) == T_CONS;
 }
 
 Value box(ValueType type, int ordinal) {
     return type << (sizeof(Value)*8 - TYPE_BITS) | ordinal;
 }
 Value intern(const char *sym) {
-    int i = 0;
-    char *it = (char *)memory;
+    size_t i = 0;
     while(i < hp) {
-        if(strcmp((char *)memory + i, sym) == 0) {
+        if(strcmp(&atoms[i], sym) == 0) {
             return box(T_SYMBOL, i);
         }
-        it += strlen(it) + 1;
+        i += strlen(&atoms[i]) + 1;
     }
-    hp += strlen(strcpy(it, sym)) + 1;
-    if(hp > sp*sizeof(Value)) return error("out of memory: symbol");
+    hp += strlen(strcpy(&atoms[i], sym)) + 1;
+    if(hp >= sp*sizeof(Cell)) error("out of memory: symbol\n");
     
     return box(T_SYMBOL, i);
 }
 Value cons(Value car, Value cdr) {
-    memory[--sp] = cdr;
-    memory[--sp] = car;
-    if(hp > sp*sizeof(Value)) return error("out of memory: cons");
+    cells[--sp] = (Cell){car, cdr};
+    if(hp >= sp*sizeof(Cell)) error("out of memory: cons\n");
     return box(T_CONS, sp);
 }
 
 Value car(Value v) {
-    switch(type(v)) {
-        case T_INT: return error("car: int");
-        case T_CLOSURE: return error("car: closure");
-        case T_SYMBOL: return box(T_INT, ordinal(v));
-        case T_BUILTIN: return intern(get_builtin(ordinal(v)).name);
-        case T_CONS: return memory[ordinal(v)];
-        case T_META: return car(get_unmeta(v));
-    }
-    panic("car: ???");
+    if(type(v) != T_CONS) error("car: not a cons\n");
+    return car_(v);
 }
 Value cdr(Value v) {
-    switch(type(v)) {
-        case T_INT: return error("cdr: int");
-        case T_CLOSURE: return error("cdr: closure");
-        case T_SYMBOL:
-            return ((char *)memory)[ordinal(v) + 1]?
-                box(T_SYMBOL, ordinal(v) + 1) : nil;
-        case T_BUILTIN: return nil;
-        case T_CONS: return memory[ordinal(v) + 1];
-        case T_META: return cdr(get_unmeta(v));
-    }
-    panic("cdr: ???");
+    if(type(v) != T_CONS) error("cdr: not a cons\n");
+    return cdr_(v);
 }
 
-Value clos_op(Value v) { return cdr(car(v)); }
-Value clos_env(Value v) { return cdr(v); }
-Value clos_args(Value v) { return car(v); }
-
-Value lookup(Value sym, Value tab) {
-    while(tab) {
-        Value binding = car(tab);
-        if(car(binding) == sym) {
-            return cdr(binding);
-        }
-        tab = cdr(tab);
-    }
-    return sym_err;
+Value captag(Value v) {
+    if(type(v) == T_CAPSULE) return car_(v);
+    error("captop: not a capsule\n");
+}
+bool iscap(Value tag, Value value) { return captag(value) == tag; }
+Value encap(Value tag, Value value) {
+    return box(T_CAPSULE, ordinal(cons(tag, value)));
+}
+Value decap(Value tag, Value value) {
+    if(iscap(tag, value)) return cdr_(value);
+    error("decap: tag mismatch\n");
 }
 
-Value scoped_lookup(Value sym, Value env) {
-    if(type(sym) != T_SYMBOL) panic("lookup: not a symbol");
-    
+// (vau env param penv . body)
+Value vau_env(Value v) {
+    if(iscap(sym_vau, v)) return car(cdr_(v));
+    error("vau_env: not a vau\n");
+}
+Value vau_param(Value v) {
+    if(iscap(sym_vau, v)) return car(cdr(cdr_(v)));
+    error("vau_param: not a vau\n");
+}
+Value vau_penv(Value v) {
+    if(iscap(sym_vau, v)) return car(cdr(cdr(cdr_(v))));
+    error("vau_penv: not a vau\n");
+}
+Value vau_body(Value v) {
+    if(iscap(sym_vau, v)) return cdr(cdr(cdr(cdr_(v))));
+    error("vau_body: not a vau\n");
+}
+
+// (wrap appv)
+Value wrap(Value v) { return encap(sym_wrap, v); }
+Value unwrap(Value v) { return decap(sym_wrap, v); }
+
+// (meta v meta)
+Value get_meta(Value v) { return iscap(sym_meta, v)? cdr(cdr_(v)) : nil; }
+Value get_unmeta(Value v) { return iscap(sym_meta, v)? car(cdr_(v)) : v; }
+
+Value *lookup(Value sym, Value frame) {
+    while(frame) {
+        Value binding = car(frame);
+        if(car(binding) == sym) return &cdr_(binding);
+        frame = cdr(frame);
+    }
+    return NULL;
+}
+Value *scoped_lookup(Value sym, Value env) {
     while(env) {
-        Value result = lookup(sym, car(env));
-        if(result == sym_err) {
-            return result;
-        }
+        Value *result = lookup(sym, car(env));
+        if(result) return result;
         env = cdr(env);
     }
-    return error("unbound symbol");
+    return NULL;
+}
+void define(Value sym, Value val, Value env) {
+    car_(env) = cons(cons(sym, val), car_(env));
+}
+Value push_scope (Value env) {
+    return cons(nil, env);
 }
 
 Value eval(Value v, Value env);
@@ -148,31 +173,20 @@ Value list(Value tail, Value env) {
     return cons(eval(car(tail), env), list(cdr(tail), env));
 }
 
-Value bind(Value sym, Value val, Value env) {
-    switch(type(sym)) {
-        case T_CONS: return bind(
-            car(sym), car(val),
-            bind(cdr(sym), cdr(val), env)
-        );
-        case T_SYMBOL: return cons(cons(sym, val), env);
-        case T_INT: return error("bind: int");
-        case T_BUILTIN: return error("bind: builtin");
-        case T_CLOSURE: return error("bind: closure");
-        case T_META: return bind(memory[])
-    }
-    panic("bind: ???");
-}
-
-Value eval_raw(Value v, Value env) {
+Value eval(Value v, Value env) {
+    Value *lu;
+    v = get_unmeta(v);
     switch(type(v)) {
         // Self-evaluating
         case T_INT:
         case T_BUILTIN:
-        case T_CLOSURE: return v;
-        case T_META: return eval_raw(get_unmeta(v), env);
+        case T_CAPSULE: return v;
         
         // Symbol lookup
-        case T_SYMBOL: return lookup(v, env);
+        case T_SYMBOL:
+            lu = lookup(v, env);
+            if(lu) return *lu;
+            error("eval: unbound symbol\n");
         
         // Application
         case T_CONS: {
@@ -180,144 +194,184 @@ Value eval_raw(Value v, Value env) {
             for(;;) {
                 Value op = get_unmeta(car(v));
                 switch(type(op)) {
-                    case T_INT: { // Int returns the nth argument
-                        int i = ordinal(op);
-                        while(i--) args = cdr(args);
-                        return car(args);
-                    }
-                    case T_SYMBOL: return error("eval apply: symbol");
-                    case T_CONS: return error(op? "eval apply: cons" : "eval apply: nil");
+                    case T_INT: error("eval apply: int\n");
+                    case T_SYMBOL: error("eval apply: symbol\n");
+                    case T_CONS: error(op? "eval apply: cons" : "eval apply: nil");
                     case T_BUILTIN: return get_builtin(ordinal(op)).fn(args, env);
-                    case T_CLOSURE: return eval(
-                        clos_op(op),
-                        bind(
-                            clos_args(op),
-                            list(args, env),
-                            clos_env(op)? env : cdr(op)
-                        )
-                    );
-                    case T_META: continue;
+                    case T_CAPSULE:
+                        if(iscap(sym_wrap, op)) {
+                            v = unwrap(op);
+                            args = list(args, env);
+                            return eval(v, env);
+                        }
+                        else if(iscap(sym_vau, op)) {
+                            env = push_scope(env);
+                            Value param = vau_param(op);
+                            if(param != sym_ignore) {
+                                define(param, args, env);
+                            }
+                            Value penv = vau_penv(op);
+                            if(penv != sym_ignore) {
+                                define(penv, env, env);
+                            }
+                            
+                            Value body = vau_body(op);
+                            Value last = nil;
+                            while(iscons(body)) {
+                                last = eval(car_(body), env);
+                            }
+                            return last;
+                        }
+                        else {
+                            error("eval apply: unknown capsule\n");
+                        }
                 }
             }
-            panic("eval cons: ???");
+            error("eval cons: ???\n");
         }
     }
-    panic("eval: ???");
+    error("eval: ???\n");
 }
 
-void fprint_value(FILE* stream, Value v) {
+typedef struct {
+    void (*write)(const char *, void *);
+    void *data;
+} Writer;
+
+void write(Writer *w, const char * fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[256];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    w->write(buf, w->data);
+}
+
+void file_write_cb(const char *s, void *f) {
+    fprintf((FILE *)f, "%s", s);
+}
+void file_writer(Writer *w, FILE *f) {
+    w->write = (void (*)(const char *, void *))&file_write_cb;
+    w->data = f;
+}
+
+void print(Writer *w, Value v) {
     switch(type(v)) {
-        case T_INT: fprintf(stream, "%d", ordinal(v)); break;
-        case T_SYMBOL: fprintf(stream, "%s", (char *)memory + ordinal(v)); break;
+        case T_INT: write(w, "%d", ordinal(v)); break;
+        case T_SYMBOL: write(w, "%s", atoms + ordinal(v)); break;
         case T_CONS: {
-            fprintf(stream, "(");
-            fprint_value(stream, car(v));
+            write(w, "(");
+            print(w, car(v));
             v = cdr(v);
             while(type(v) == T_CONS) {
-                fprintf(stream, " ");
-                fprint_value(stream, car(v));
+                write(w, " ");
+                print(w, car(v));
                 v = cdr(v);
             }
             if(v) {
-                fprintf(stream, " . ");
-                fprint_value(stream, v);
+                write(w, " . ");
+                print(w, v);
             }
-            fprintf(stream, ")");
+            write(w, ")");
             break;
         }
-        case T_META: {
-            fprintf(stream, "#(meta ");
-            fprint_value(stream, car(v));
-            fprintf(stream, " ");
-            fprint_value(stream, cdr(v));
-            fprintf(stream, ")#");
+        case T_CAPSULE:
+            write(w, "#(");
+            print(w, car(v));
+            write(w, " ");
+            print(w, cdr(v));
+            write(w, ")#");
             break;
-        }
-        case T_BUILTIN: fprintf(stream, "<builtin %s>", get_builtin(ordinal(v)).name); break;
-        case T_CLOSURE: fprintf(stream, "<closure>"); break;
+        case T_BUILTIN:
+            write(w, "<builtin %s>", get_builtin(ordinal(v)).name);
+            break;
     }
 }
 
-Value eval(Value v, Value env) {
-    Value result = eval_raw(v, env);
-    if(errmsg && type(v) == T_CONS) {
-        Value meta = get_meta(v);
-        if(meta) {
-            Value name = lookup(sym_name, meta);
-            Value line = lookup(sym_line, meta);
-            if(type(name) == T_SYMBOL && type(line) == T_INT) {
-                fprintf(stderr, "%s @ %d\n",
-                    (char *)memory + ordinal(name), ordinal(line));
-            }
-        }
-    }
-    return result;
-}
-
-Value push_pair(Value name, Value value, Value env) {
-    return cons(cons(name, value), env);
-}
-
-Value push_scope (Value env) {
-    return cons(nil, env);
-}
-
+// (vau param penv . body)
 Value bi_vau(Value args, Value env) {
-    if(type(args) != T_CONS) return error("vau: no args");
-    Value op = car(args);
-    if(type(op) != T_CONS) return error("vau: no op");
-    Value clos = cons(op, cons(cdr(args), env));
-    return cons(box(T_CLOSURE, ordinal(clos)), clos);
+    Value
+        param = car(args),
+        penv = car(cdr(args)),
+        body = cdr(cdr(args));
+    
+    return encap(sym_vau, cons(env, cons(param, cons(penv, body))));
 }
 
 Value bi_eval(Value args, Value env) {
-    if(type(args) != T_CONS) return error("eval: no args");
+    if(type(env) != T_CONS) error("eval: bad env\n");
     return eval(car(args), env);
 }
 
-Value bi_car(Value args, Value env) {
-    if(type(args) != T_CONS) return error("car: no args");
+Value bi_car(Value args, UNUSED Value env) {
     return car(car(args));
 }
 
-Value bi_cdr(Value args, Value env) {
-    if(type(args) != T_CONS) return error("cdr: no args");
+Value bi_cdr(Value args, UNUSED Value env) {
     return cdr(car(args));
 }
 
-Value bi_wrap(Value args, Value env) {
-    if(type(args) != T_CONS) return error("wrap: no args");
-    return cons(box(T_META, ordinal(car(args))), car(args));
+Value bi_wrap(Value args, UNUSED Value env) {
+    return wrap(car(args));
 }
 
-Value bi_unwrap(Value args, Value env) {
-    if(type(args) != T_CONS) return error("unwrap: no args");
-    return get_unmeta(car(args));
+Value bi_unwrap(Value args, UNUSED Value env) {
+    return unwrap(car(args));
 }
 
 Value bi_define(Value args, Value env) {
-    if(type(args) != T_CONS) return error("define: no args");
-    Value sym = car(args);
-    if(type(sym) != T_SYMBOL) return error("define: not a symbol");
-    Value val = eval(car(cdr(args)), env);
-    if(val == sym_err) return val;
-    return bind(sym, val, env);
+    define(car(args), car(cdr(args)), env);
+    return sym_inert;
 }
 
-Value bi_print(Value args, Value env) {
-    if(type(args) != T_CONS) return error("print: no args");
-    fprint_value(stdout, car(args));
-    return nil;
+Value bi_print(Value args, UNUSED Value env) {
+    Writer out;
+    file_writer(&out, stdout);
+    while(iscons(args)) {
+        print(&out, car(args));
+        args = cdr(args);
+    }
+    return sym_inert;
 }
 
 Value bi_error(Value args, Value env) {
-    if(type(args) != T_CONS) return error("error: no args");
-    return error((char *)memory + ordinal(car(args)));
+    bi_print(args, env);
+    error(NULL);
 }
 
+Value bi_select(Value args, UNUSED Value env) {
+    if(type(args) != T_CONS) error("select: no args\n");
+    Value c = car(args);
+    Value t = car(cdr(args));
+    Value f = car(cdr(cdr(args)));
+    return c? t : f;
+}
+
+Value bi_eq(Value args, UNUSED Value env) {
+    return ordinal(car(args)) == ordinal(car(cdr(args)))? sym_tru : nil;
+}
+
+bool op_args(Value args, Value *lhs, Value *rhs) {
+    *lhs = car(args);
+    *rhs = car(cdr(args));
+    return !(type(*lhs) == T_INT && type(*rhs) == T_INT);
+}
+#define SIMPLE_OP(name, op) \
+    Value bi_ ## name(Value args, UNUSED Value env) { \
+        Value lhs, rhs; \
+        if(op_args(args, &lhs, &rhs)) error(#name ": not int"); \
+        return box(T_INT, ordinal(lhs) op ordinal(rhs)); \
+    }
+
+SIMPLE_OP(plus, +)
+SIMPLE_OP(minus, -)
+SIMPLE_OP(mul, *)
+SIMPLE_OP(div, /)
+SIMPLE_OP(mod, %)
+
+#define VAU_ID 0
 BuiltinEntry builtins[] = {
-    {"def!", bi_define},
     {"$vau", bi_vau},
+    {"def!", bi_define},
     {"eval", bi_eval},
     {"car", bi_car},
     {"cdr", bi_cdr},
@@ -407,13 +461,11 @@ Value parse(Reader *r) {
                     return cons(v, x);
                 }
                 Value x = cons(parse(r), nil);
-                if(v) {
-                    memory[ordinal(v) + 1] = x;
-                }
+                if(v) cells[ordinal(v)].cdr = x;
                 v = x;
             }
             return v;
-        case ')': return error("read: unexpected ')'");
+        case ')': error("read: unexpected ')'\n");
         case '\'': return cons(sym_quote, cons(parse(r), nil));
         case '"':
             i = strlen(r->buf) - 1;
@@ -422,7 +474,7 @@ Value parse(Reader *r) {
                 return intern(r->buf + 1);
             }
             else {
-                return error("read: unterminated string");
+                error("read: unterminated string\n");
             }
         default:
             return sscanf(r->buf, "%d%n", &n, &i) > 0 && r->buf[i] == '\0'?
@@ -435,34 +487,82 @@ Value read(Reader *r) {
     return r->buf[0]? parse(r) : nil;
 }
 
+Value relocate(Value v) {
+    if(!iscons(v)) return v;
+    if(car(v) == unbound) return cdr(v);
+    
+    Value nc = cons(relocate(car(v)), relocate(cdr(v)));
+    cells[ordinal(v)] = (Cell) {unbound, nc};
+    return nc;
+}
+
+Value gc(Value env) {
+    cells = tospace;
+    // lim = curheap+heapsize-sizeof(cons_t);
+    env = relocate(env);
+    
+    Cell *tmp = tospace;
+    tospace = fromspace;
+    fromspace = tmp;
+    
+    return env;
+}
+
 /* Lisp initialization and REPL */
 int main() {
-    intern("");
+    if(setjmp(toplevel)) {
+        printf("Symbol table overflow.\n");
+        return 1;
+    }
+    
+    intern(""); // unbound symbol
     sym_inert = intern("#inert");
     sym_ignore = intern("#ignore");
-    sym_err = intern("#ERR");
     sym_quote = intern("quote");
-    sym_name = intern("name");
-    sym_line = intern("line");
+    sym_vau = intern("$vau");
+    sym_wrap = intern("wrap");
+    sym_unwrap = intern("unwrap");
+    sym_meta = intern("meta");
+    sym_tru = intern("#t");
     
     Value env = cons(nil, nil);
-    for(int i = 0; i < sizeof(builtins)/sizeof(builtins[0]); ++i) {
-        env = push_pair(
-            intern(builtins[i].name),
-            box(T_BUILTIN, i),
-            env
-        );
+    for(size_t i = 0; i < sizeof(builtins)/sizeof(builtins[0]); ++i) {
+        Value v = box(T_BUILTIN, i);
+        if(i != VAU_ID) v = wrap(v);
+        define(intern(builtins[i].name), v, env);
     }
     Reader r = { .read = (int(*)(void *))&fgetc, .data = stdin };
+    Writer w;
+    file_writer(&w, stdout);
+    
+    if(setjmp(toplevel)) {
+        printf("longjmp received.\n");
+        env = gc(env);
+    }
     
     for(;;) {
         printf("\x01\x1b[7m\x02ϝ>>\x01\x1b[0m\x02 ");
-        Value v = eval(read(&r));
+        if(peek(&r) == '/') {
+            consume(&r);
+            scan(&r);
+            if(strcmp(r.buf, "quit") == 0) break;
+            else if(strcmp(r.buf, "gc") == 0) env = gc(env);
+            else if(strcmp(r.buf, "env") == 0) {
+                print(&w, env);
+                printf("\n");
+            }
+            else {
+                printf("Unknown command: /%s\n", r.buf);
+            }
+            continue;
+        }
+        Value v = eval(read(&r), env);
         if(v == sym_inert) {
             continue;
         }
         
-        fprint_value(stdout, eval(read(&r), env));
-        sp = ordinal(env); // "gc"?
+        print(&w, eval(read(&r), env));
+        env = gc(env);
     }
+    return 0;
 }
