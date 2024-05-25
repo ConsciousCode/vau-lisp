@@ -35,7 +35,6 @@ typedef enum {
 } ValueType;
 
 typedef uint32_t Value;
-const int i = ORD_MASK;
 typedef struct {
     Value car, cdr;
 } Cell;
@@ -311,7 +310,10 @@ Value eval(Value v, Value env) {
                     case T_INT: error("eval apply: int");
                     case T_SYMBOL: error("eval apply: symbol");
                     case T_CONS: error(op? "eval apply: cons" : "eval apply: nil");
-                    case T_BUILTIN: return get_builtin(ordinal(op)).fn(args, env);
+                    case T_BUILTIN:
+                        printf("Apply builtin %s ", get_builtin(ordinal(op)).name);
+                        printf("with %s\n", tostring(args));
+                        return get_builtin(ordinal(op)).fn(args, env);
                     case T_CAPSULE:
                         if(iscap(SYM_WRAP, op)) {
                             op = unwrap(op);
@@ -397,7 +399,7 @@ Value bi_unwrap(Value args, UNUSED Value env) {
 }
 
 Value bi_define(Value args, Value env) {
-    define(car(args), car(cdr(args)), env);
+    define(car(args), eval(car(cdr(args)), env), env);
     return SYM_INERT;
 }
 
@@ -453,6 +455,7 @@ SIMPLE_OP(div, /)
 SIMPLE_OP(mod, %)
 
 #define VAU_ID 0
+#define DEF_ID 6
 BuiltinEntry builtins[] = {
     {"$vau", bi_vau},
     {"eval", bi_eval},
@@ -460,7 +463,7 @@ BuiltinEntry builtins[] = {
     {"cdr", bi_cdr},
     {"wrap", bi_wrap},
     {"unwrap", bi_unwrap},
-    {"def!", bi_define},
+    {"$def!", bi_define},
     {"print", bi_print},
     {"error", bi_error},
     {"select", bi_select},
@@ -499,6 +502,7 @@ void string_reader(Reader *r, string_reader_data *buf) {
 }
 
 char consume(Reader *r) {
+    if(r->nextc == EOF) return EOF;
     if(r->nextc) {
         char c = r->nextc;
         r->nextc = 0;
@@ -512,12 +516,14 @@ char peek(Reader *r) {
 }
 
 void read_space(Reader *r) {
-    while(peek(r) <= ' ') {
-        consume(r);
-    }
+    while(peek(r) <= ' ' && peek(r) != EOF) consume(r);
 }
 
 Value parse(Reader *r);
+
+bool isstop(char c) {
+    return c <= ' ' || c == '(' || c == ')' || c == '\'' || c == ';';
+}
 
 char scan(Reader *r) {
     read_space(r);
@@ -550,11 +556,14 @@ char scan(Reader *r) {
         default:
             do {
                 r->buf[i++] = consume(r);
-                c = peek(r);
-            } while(i < BUFFER_SIZE && !(c == '(' || c == ')' || c <= ' '));
+            } while(i < BUFFER_SIZE && !isstop(peek(r)));
+            if(i == BUFFER_SIZE) {
+                r->buf[i] = '\0';
+                error("read: token too long \"%s...\"", r->buf);
+            }
             break;
     }
-    r->buf[i] = 0;
+    r->buf[i] = '\0';
     return r->buf[0];
 }
 
@@ -586,8 +595,8 @@ Value parse(Reader *r) {
         case '"':
             i = strlen(r->buf) - 1;
             if(r->buf[i] == '"') {
-                r->buf[i] = 0;
-                return intern(r->buf + 1);
+                r->buf[i] = '\0';
+                return intern(&r->buf[1]);
             }
             error("read: unterminated string");
         default:
@@ -647,25 +656,21 @@ void int_handler(UNUSED int sig) {
 
 /* Lisp initialization and REPL */
 int main() {
-    struct sigaction act;
-    act.sa_handler = int_handler;
+    struct sigaction act = {.sa_handler = int_handler};
     sigaction(SIGINT, &act, NULL);
     
     rl_readline_name = "vau-lisp";
     rl_attempted_completion_function = NULL;
     
-    
-    #define INIT_ATOMS_ARRAY(name, str, ord) SYM_ ## name = intern(str);
-    INIT_ATOMS(INIT_ATOMS_ARRAY)
+    #define INIT_ATOMS_INTERN(name, str, ord) SYM_ ## name = intern(str);
+    INIT_ATOMS(INIT_ATOMS_INTERN)
     
     Value env = cons(nil, nil);
     for(size_t i = 0; i < sizeof(builtins)/sizeof(builtins[0]); ++i) {
         Value v = box(T_BUILTIN, i);
-        if(i != VAU_ID) v = wrap(v);
+        if(i != VAU_ID && i != DEF_ID) v = wrap(v);
         define(intern(builtins[i].name), v, env);
     }
-    // Save for when we load the prelude
-    //Reader r = { .read = (int(*)(void *))&fgetc, .data = stdin };
     Reader r;
     string_reader_data read_data;
     string_reader(&r, &read_data);
@@ -703,20 +708,20 @@ int main() {
             continue;
         }
         
-        size_t len = strlen(line), i;
-        for(i = 0; i < len; ++i) {
+        if(line == NULL) continue;
+        
+        // Empty line
+        int i;
+        for(i = 0; line[i]; ++i) {
             if(!isspace(line[i])) break;
         }
-        // Empty line
-        if(i == len) {
-            continue;
-        }
+        if(line[i] == '\0') continue;
         
-        //printf("Got line %s\n", line);
         read_data = (string_reader_data){line, strlen(line), 0};
+        string_reader(&r, &read_data);
         Value v = read_ob(&r);
         int_state = -1; // run
-        //printf("Read %s\n", tostring(v));
+        printf("Read %s\n", tostring(v));
         v = eval(v, env);
         // Only add to history if it's not an error
         add_history(line);
