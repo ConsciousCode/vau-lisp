@@ -1,9 +1,11 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -g
+CFLAGS = -Wall -Wextra -Werror -gdwarf-2 -g3
+SRC = $(wildcard src/*.c)
+LIBS = -lreadline
 
-out/esp: lisp.c
-	mkdir -p out
-	$(CC) $(CFLAGS) -o $@ lisp.c
+out/esp: $(SRC)
+	@mkdir -p out
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 clean:
 	rm -f out/*
