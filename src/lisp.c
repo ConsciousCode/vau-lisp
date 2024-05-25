@@ -334,7 +334,7 @@ Value eval(Value v, Value env) {
                             // Improper list
                             if(args) cdr_(cur) = eval(args, env);
                             printf("Apply %s ", tostring(op));
-                            printf("to %s\n", tostring(eargs));
+                            printf("with %s\n", tostring(eargs));
                             
                             return eval(cons(op, eargs), env);
                         }
@@ -345,9 +345,13 @@ Value eval(Value v, Value env) {
                             if(param != SYM_IGNORE) define(param, args, env);
                             if(penv != SYM_IGNORE) define(penv, env, env);
                             
+                            printf("Apply vau %s ", tostring(op));
+                            printf("with %s\n", tostring(args));
+                            
                             Value body = vau_body(op);
                             Value last = nil;
                             while(iscons(body)) {
+                                printf("Evaluating %s\n", tostring(car_(body)));
                                 last = eval(car_(body), env);
                             }
                             return last;
@@ -665,18 +669,18 @@ int main() {
     string_reader(&r, &read_data);
     file_writer(&lisp_stdout, stdout);
     
-    // ^C run (0) -> none (1) -> once (2) -> quit
+    // ^C run (-1) -> none (0) -> once (1) -> quit
     // Error * -> none
     // In the REPL, run <-> none
     if(sigsetjmp(toplevel, 1)) {
-        if(int_state) {
-            if(int_state > 2) {
-                putchar('\n');
-                return 0;
-            }
+        if(int_state == 1) {
             printf("Press Ctrl-C again to quit\n");
+            goto repl;
         }
-        goto repl;
+        else if(int_state > 1) {
+            putchar('\n');
+            return 0;
+        }
     }
     
     repl:
@@ -699,7 +703,7 @@ int main() {
         //printf("Got line %s\n", line);
         read_data = (string_reader_data){line, strlen(line), 0};
         Value v = read_ob(&r);
-        int_state = 0; // run
+        int_state = -1; // run
         //printf("Read %s\n", tostring(v));
         v = eval(v, env);
         // Only add to history if it's not an error
@@ -712,7 +716,7 @@ int main() {
         
         //print(eval(read(&r), env));
         env = gc(env);
-        int_state = 1; // none
+        int_state = 0; // none
     }
     return 0;
 }
