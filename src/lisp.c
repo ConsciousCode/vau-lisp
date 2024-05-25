@@ -53,19 +53,16 @@ BuiltinEntry get_builtin(int ord);
     F(WRAP, "wrap", 3) F(UNWRAP, "unwrap", 4) F(META, "meta", 5) \
     F(TRUE, "#t", 6) F(INERT, "#inert", 7) F(IGNORE, "#ignore", 8)
 
-#define INIT_ATOMS_ARRAY(name, str, ord) str "\0"
-char atoms[MAX_ATOMS] = INIT_ATOMS(INIT_ATOMS_ARRAY);
-
-#define INIT_ATOMS_ENUM(name, str, ord) \
-    const Value SYM_ ## name = box_(T_SYMBOL, ord);
+#define INIT_ATOMS_ENUM(name, str, ord) Value SYM_ ## name;
 INIT_ATOMS(INIT_ATOMS_ENUM)
 
 static volatile int int_state = 0;
 const char *errmsg = 0;
 const Value nil = 0, unbound = T_SYMBOL;
+char atoms[MAX_ATOMS];
 Cell a_cells[MAX_CELLS] = {0}, b_cells[MAX_CELLS] = {0};
 Cell *fromspace = a_cells, *tospace = b_cells, *cells = a_cells;
-size_t hp = sizeof(INIT_ATOMS(INIT_ATOMS_ARRAY)), sp = 0; // Heap and stack pointer
+size_t hp = 0, sp = 0; // Heap and stack pointer
 sigjmp_buf toplevel;
 
 _Noreturn void error(const char *msg, ...) {
@@ -353,6 +350,7 @@ Value eval(Value v, Value env) {
                             while(iscons(body)) {
                                 printf("Evaluating %s\n", tostring(car_(body)));
                                 last = eval(car_(body), env);
+                                body = cdr_(body);
                             }
                             return last;
                         }
@@ -656,6 +654,10 @@ int main() {
     rl_readline_name = "vau-lisp";
     rl_attempted_completion_function = NULL;
     
+    
+    #define INIT_ATOMS_ARRAY(name, str, ord) SYM_ ## name = intern(str);
+    INIT_ATOMS(INIT_ATOMS_ARRAY)
+    
     Value env = cons(nil, nil);
     for(size_t i = 0; i < sizeof(builtins)/sizeof(builtins[0]); ++i) {
         Value v = box(T_BUILTIN, i);
@@ -700,6 +702,16 @@ int main() {
             add_history(line);
             continue;
         }
+        
+        size_t len = strlen(line), i;
+        for(i = 0; i < len; ++i) {
+            if(!isspace(line[i])) break;
+        }
+        // Empty line
+        if(i == len) {
+            continue;
+        }
+        
         //printf("Got line %s\n", line);
         read_data = (string_reader_data){line, strlen(line), 0};
         Value v = read_ob(&r);
