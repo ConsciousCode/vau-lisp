@@ -18,6 +18,8 @@
 #define ORD_MASK ~(((1<<TYPE_BITS) - 1) << (sizeof(Value)*8 - TYPE_BITS))
 #define BUFFER_SIZE 40
 
+#define box_(type, ordinal) (type << (sizeof(Value)*8 - TYPE_BITS) | ordinal)
+
 #define car_(v) cells[ordinal(v)].car
 #define cdr_(v) cells[ordinal(v)].cdr
 
@@ -45,21 +47,25 @@ typedef struct {
 
 BuiltinEntry get_builtin(int ord);
 
-typedef enum {
-    INT_NONE,
-    INT_RUN,
-    INT_ONCE,
-} IntState;
-
 /// Global variables ///
-static volatile IntState int_state = INT_NONE;
+#define INIT_ATOMS(F) \
+    F(UNBOUND, "", 0) F(QUOTE, "quote", 1) F(VAU, "$vau", 2) \
+    F(WRAP, "wrap", 3) F(UNWRAP, "unwrap", 4) F(META, "meta", 5) \
+    F(TRUE, "#t", 6) F(INERT, "#inert", 7) F(IGNORE, "#ignore", 8)
+
+#define INIT_ATOMS_ARRAY(name, str, ord) str "\0"
+char atoms[MAX_ATOMS] = INIT_ATOMS(INIT_ATOMS_ARRAY);
+
+#define INIT_ATOMS_ENUM(name, str, ord) \
+    const Value SYM_ ## name = box_(T_SYMBOL, ord);
+INIT_ATOMS(INIT_ATOMS_ENUM)
+
+static volatile int int_state = 0;
 const char *errmsg = 0;
 const Value nil = 0, unbound = T_SYMBOL;
-Value sym_inert, sym_ignore, sym_quote, sym_vau, sym_wrap, sym_unwrap, sym_meta, sym_tru;
-char atoms[MAX_ATOMS];
 Cell a_cells[MAX_CELLS] = {0}, b_cells[MAX_CELLS] = {0};
 Cell *fromspace = a_cells, *tospace = b_cells, *cells = a_cells;
-size_t hp = 0, sp = 0; // Heap and stack pointer
+size_t hp = sizeof(INIT_ATOMS(INIT_ATOMS_ARRAY)), sp = 0; // Heap and stack pointer
 sigjmp_buf toplevel;
 
 _Noreturn void error(const char *msg, ...) {
@@ -70,6 +76,7 @@ _Noreturn void error(const char *msg, ...) {
         vfprintf(stderr, msg, args);
         fprintf(stderr, "\n");
     }
+    int_state = 1;
     longjmp(toplevel, 1);
 }
 
@@ -77,12 +84,13 @@ ValueType type(Value v) {
     return v >> ORD_BITS;
 }
 int ordinal(Value v) {
-    return (v & ORD_MASK) | ((v & (1<<(ORD_BITS - 1)))? ~ORD_MASK : 0);
+    return ((int32_t)(v << TYPE_BITS)) >> TYPE_BITS;
+    //return (v & ORD_MASK) | ((v & (1<<(ORD_BITS - 1)))? ~ORD_MASK : 0);
 }
 bool iscons(Value v) { return v && type(v) == T_CONS; }
-Value box(ValueType type, int ordinal) {
-    if(ordinal & ~ORD_MASK) error("box: ordinal too large: %d\n", ordinal);
-    return type << (sizeof(Value)*8 - TYPE_BITS) | ordinal;
+Value box(ValueType type, int ord) {
+    if(ordinal(ord) & ~ORD_MASK) error("box: ordinal %d too large", ord);
+    return box_(type, ord);
 }
 
 typedef struct {
@@ -91,6 +99,7 @@ typedef struct {
 } Writer;
 Writer lisp_stdout;
 
+__attribute__((__format__(__printf__, 2, 3)))
 void write_fmt(Writer *w, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -231,29 +240,29 @@ Value decap(Value tag, Value value) {
 
 // (vau env param penv . body)
 Value vau_env(Value v) {
-    if(iscap(sym_vau, v)) return car(cdr_(v));
+    if(iscap(SYM_VAU, v)) return car(cdr_(v));
     error("vau_env: not a vau");
 }
 Value vau_param(Value v) {
-    if(iscap(sym_vau, v)) return car(cdr(cdr_(v)));
+    if(iscap(SYM_VAU, v)) return car(cdr(cdr_(v)));
     error("vau_param: not a vau");
 }
 Value vau_penv(Value v) {
-    if(iscap(sym_vau, v)) return car(cdr(cdr(cdr_(v))));
+    if(iscap(SYM_VAU, v)) return car(cdr(cdr(cdr_(v))));
     error("vau_penv: not a vau");
 }
 Value vau_body(Value v) {
-    if(iscap(sym_vau, v)) return cdr(cdr(cdr(cdr_(v))));
+    if(iscap(SYM_VAU, v)) return cdr(cdr(cdr(cdr_(v))));
     error("vau_body: not a vau");
 }
 
 // (wrap appv)
-Value wrap(Value v) { return encap(sym_wrap, v); }
-Value unwrap(Value v) { return decap(sym_wrap, v); }
+Value wrap(Value v) { return encap(SYM_WRAP, v); }
+Value unwrap(Value v) { return decap(SYM_WRAP, v); }
 
 // (meta v meta)
-Value get_meta(Value v) { return iscap(sym_meta, v)? cdr(cdr_(v)) : nil; }
-Value get_unmeta(Value v) { return iscap(sym_meta, v)? car(cdr_(v)) : v; }
+Value get_meta(Value v) { return iscap(SYM_META, v)? cdr(cdr_(v)) : nil; }
+Value get_unmeta(Value v) { return iscap(SYM_META, v)? car(cdr_(v)) : v; }
 
 Value *lookup(Value sym, Value frame) {
     while(frame) {
@@ -307,7 +316,7 @@ Value eval(Value v, Value env) {
                     case T_CONS: error(op? "eval apply: cons" : "eval apply: nil");
                     case T_BUILTIN: return get_builtin(ordinal(op)).fn(args, env);
                     case T_CAPSULE:
-                        if(iscap(sym_wrap, op)) {
+                        if(iscap(SYM_WRAP, op)) {
                             op = unwrap(op);
                             // Evaluate arguments
                             Value eargs = nil, cur = nil;
@@ -324,17 +333,17 @@ Value eval(Value v, Value env) {
                             }
                             // Improper list
                             if(args) cdr_(cur) = eval(args, env);
-                            //printf("Apply %s ", tostring(op));
-                            //printf("to %s\n", tostring(eargs));
+                            printf("Apply %s ", tostring(op));
+                            printf("to %s\n", tostring(eargs));
                             
                             return eval(cons(op, eargs), env);
                         }
-                        else if(iscap(sym_vau, op)) {
+                        else if(iscap(SYM_VAU, op)) {
                             env = push_scope(env);
                             Value param = vau_param(op);
                             Value penv = vau_penv(op);
-                            if(param != sym_ignore) define(param, args, env);
-                            if(penv != sym_ignore) define(penv, env, env);
+                            if(param != SYM_IGNORE) define(param, args, env);
+                            if(penv != SYM_IGNORE) define(penv, env, env);
                             
                             Value body = vau_body(op);
                             Value last = nil;
@@ -361,7 +370,7 @@ Value bi_vau(Value args, Value env) {
         penv = car(cdr(args)),
         body = cdr(cdr(args));
     
-    return encap(sym_vau, cons(env, cons(param, cons(penv, body))));
+    return encap(SYM_VAU, cons(env, cons(param, cons(penv, body))));
 }
 
 Value bi_eval(Value args, Value env) {
@@ -387,7 +396,7 @@ Value bi_unwrap(Value args, UNUSED Value env) {
 
 Value bi_define(Value args, Value env) {
     define(car(args), car(cdr(args)), env);
-    return sym_inert;
+    return SYM_INERT;
 }
 
 Value bi_print(Value args, UNUSED Value env) {
@@ -403,7 +412,7 @@ Value bi_print(Value args, UNUSED Value env) {
         } while(iscons(args));
     }
     putchar('\n');
-    return sym_inert;
+    return SYM_INERT;
 }
 
 Value bi_error(Value args, Value env) {
@@ -420,7 +429,7 @@ Value bi_select(Value args, UNUSED Value env) {
 }
 
 Value bi_eq(Value args, UNUSED Value env) {
-    return ordinal(car(args)) == ordinal(car(cdr(args)))? sym_tru : nil;
+    return ordinal(car(args)) == ordinal(car(cdr(args)))? SYM_TRUE : nil;
 }
 
 bool op_args(Value args, Value *lhs, Value *rhs) {
@@ -571,7 +580,7 @@ Value parse(Reader *r) {
             }
             return v;
         case ')': error("read: unexpected ')'");
-        case '\'': return cons(sym_quote, cons(parse(r), nil));
+        case '\'': return cons(SYM_QUOTE, cons(parse(r), nil));
         case '"':
             i = strlen(r->buf) - 1;
             if(r->buf[i] == '"') {
@@ -630,6 +639,7 @@ Value gc(Value env) {
 }
 
 void int_handler(UNUSED int sig) {
+    ++int_state;
     siglongjmp(toplevel, 1);
 }
 
@@ -641,16 +651,6 @@ int main() {
     
     rl_readline_name = "vau-lisp";
     rl_attempted_completion_function = NULL;
-    
-    intern(""); // unbound symbol
-    sym_inert = intern("#inert");
-    sym_ignore = intern("#ignore");
-    sym_quote = intern("quote");
-    sym_vau = intern("$vau");
-    sym_wrap = intern("wrap");
-    sym_unwrap = intern("unwrap");
-    sym_meta = intern("meta");
-    sym_tru = intern("#t");
     
     Value env = cons(nil, nil);
     for(size_t i = 0; i < sizeof(builtins)/sizeof(builtins[0]); ++i) {
@@ -665,24 +665,22 @@ int main() {
     string_reader(&r, &read_data);
     file_writer(&lisp_stdout, stdout);
     
+    // ^C run (0) -> none (1) -> once (2) -> quit
+    // Error * -> none
+    // In the REPL, run <-> none
     if(sigsetjmp(toplevel, 1)) {
-        switch(int_state) {
-            case INT_RUN:
-                break;
-            case INT_NONE:
-                int_state = INT_ONCE;
-                printf("Press Ctrl-C again to quit\n");
-                break;
-            case INT_ONCE:
-                printf("\n");
+        if(int_state) {
+            if(int_state > 2) {
+                putchar('\n');
                 return 0;
+            }
+            printf("Press Ctrl-C again to quit\n");
         }
         goto repl;
     }
     
     repl:
     for(;;) {
-        if(int_state != INT_ONCE) int_state = INT_NONE;
         char *line = readline("\x01\x1b[7m\x02ϝ>>\x01\x1b[0m\x02 ");
         if(line[0] == '/') {
             if(strcmp(&line[1], "quit") == 0) break;
@@ -701,12 +699,12 @@ int main() {
         //printf("Got line %s\n", line);
         read_data = (string_reader_data){line, strlen(line), 0};
         Value v = read_ob(&r);
-        int_state = INT_RUN;
+        int_state = 0; // run
         //printf("Read %s\n", tostring(v));
         v = eval(v, env);
         // Only add to history if it's not an error
         add_history(line);
-        if(v == sym_inert) {
+        if(v == SYM_INERT) {
             continue;
         }
         print(v);
@@ -714,6 +712,7 @@ int main() {
         
         //print(eval(read(&r), env));
         env = gc(env);
+        int_state = 1; // none
     }
     return 0;
 }
