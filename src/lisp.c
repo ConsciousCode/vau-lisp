@@ -5,8 +5,10 @@
 #include <stdbool.h>
 #include <setjmp.h>
 #include <stdint.h>
+
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <signal.h>
 
 /// Constants ///
 #define MAX_ATOMS 65536
@@ -43,7 +45,14 @@ typedef struct {
 
 BuiltinEntry get_builtin(int ord);
 
+typedef enum {
+    INT_NONE,
+    INT_RUN,
+    INT_ONCE,
+} IntState;
+
 /// Global variables ///
+static volatile IntState int_state = INT_NONE;
 const char *errmsg = 0;
 const Value nil = 0, unbound = T_SYMBOL;
 Value sym_inert, sym_ignore, sym_quote, sym_vau, sym_wrap, sym_unwrap, sym_meta, sym_tru;
@@ -51,7 +60,7 @@ char atoms[MAX_ATOMS];
 Cell a_cells[MAX_CELLS] = {0}, b_cells[MAX_CELLS] = {0};
 Cell *fromspace = a_cells, *tospace = b_cells, *cells = a_cells;
 size_t hp = 0, sp = 0; // Heap and stack pointer
-jmp_buf toplevel;
+sigjmp_buf toplevel;
 
 _Noreturn void error(const char *msg, ...) {
     if(msg) {
@@ -286,6 +295,7 @@ Value eval(Value v, Value env) {
         
         // Application
         case T_CONS: {
+            if(v == nil) return nil;
             Value args = cdr_(v);
             for(;;) {
                 v = get_unmeta(car_(v));
@@ -581,25 +591,28 @@ Value read_ob(Reader *r) {
 }
 
 Value relocate(Value v) {
+    if(v == nil) return v;
     switch(type(v)) {
         case T_INT:
         case T_SYMBOL:
         case T_BUILTIN:
             return v;
         case T_CONS:
-            if(v == nil) return v;
-            if(car_(v) == unbound) return cdr_(v);
+            if(fromspace[ordinal(v)].car == unbound) {
+                return fromspace[ordinal(v)].cdr;
+            }
             [[fallthrough]];
         case T_CAPSULE: {
             // Order is important here. Allocate destination, get original
             //  cell, and mark unbound before relocating
             Value c = cons(nil, nil);
             Cell cell = fromspace[ordinal(v)];
+            fromspace[ordinal(v)] = (Cell) { unbound, c };
             tospace[ordinal(c)] = (Cell) {
                 relocate(cell.car),
                 relocate(cell.cdr)
             };
-            return type(v)|ordinal(c);
+            return box(type(v), ordinal(c));
         }
     }
     error("relocate: ???");
@@ -616,8 +629,16 @@ Value gc(Value env) {
     return e;
 }
 
+void int_handler(UNUSED int sig) {
+    siglongjmp(toplevel, 1);
+}
+
 /* Lisp initialization and REPL */
 int main() {
+    struct sigaction act;
+    act.sa_handler = int_handler;
+    sigaction(SIGINT, &act, NULL);
+    
     rl_readline_name = "vau-lisp";
     rl_attempted_completion_function = NULL;
     
@@ -644,13 +665,24 @@ int main() {
     string_reader(&r, &read_data);
     file_writer(&lisp_stdout, stdout);
     
-    if(setjmp(toplevel)) {
-        //env = gc(env);
+    if(sigsetjmp(toplevel, 1)) {
+        switch(int_state) {
+            case INT_RUN:
+                break;
+            case INT_NONE:
+                int_state = INT_ONCE;
+                printf("Press Ctrl-C again to quit\n");
+                break;
+            case INT_ONCE:
+                printf("\n");
+                return 0;
+        }
         goto repl;
     }
     
     repl:
     for(;;) {
+        if(int_state != INT_ONCE) int_state = INT_NONE;
         char *line = readline("\x01\x1b[7m\x02ϝ>>\x01\x1b[0m\x02 ");
         if(line[0] == '/') {
             if(strcmp(&line[1], "quit") == 0) break;
@@ -669,6 +701,7 @@ int main() {
         //printf("Got line %s\n", line);
         read_data = (string_reader_data){line, strlen(line), 0};
         Value v = read_ob(&r);
+        int_state = INT_RUN;
         //printf("Read %s\n", tostring(v));
         v = eval(v, env);
         // Only add to history if it's not an error
