@@ -58,7 +58,7 @@ INIT_ATOMS(INIT_ATOMS_ENUM)
 
 static volatile int int_state = 0;
 const char *errmsg = 0;
-const Value nil = 0, unbound = T_SYMBOL;
+const Value nil = box_(T_CONS, 0), unbound = box_(T_SYMBOL, 0);
 char atoms[MAX_ATOMS] = {0};
 Cell a_cells[MAX_CELLS] = {0}, b_cells[MAX_CELLS] = {0};
 Cell *fromspace = a_cells, *tospace = b_cells, *cells = a_cells;
@@ -133,6 +133,8 @@ void string_writer(Writer *w, string_writer_data *buf) {
 char *tostring(Value v);
 
 const char *typeof_string(Value v) {
+    if(v == nil) return "nil";
+    if(v == unbound) return "unbound";
     switch(type(v)) {
         case T_INT: return "int";
         case T_SYMBOL: return "symbol";
@@ -211,8 +213,15 @@ void write_ls(Writer *w, Value v, Value *seen) {
         // already have v in seen, so it will print a number
         int i = check_seen(v, seen);
         if(i) {
-            write_fmt(w, " . #");
-            write_fmt(w, iscons(seen[i])? "%d#" : "%d)#", i);
+            if(iscons(seen[i])) {
+                write_fmt(w, " . #%d#", i);
+            }
+            else {
+                Value sym = car_(v);
+                const char *name =
+                    type(sym) == T_SYMBOL? &atoms[ordinal(sym)] : typeof_string(sym);
+                write_fmt(w, " . #(%d %s)#", i, name);
+            }
             return;
         }
         if(iscons(v)) {
@@ -244,7 +253,10 @@ void write_looped(Writer *w, Value v, Value *seen) {
             write_fmt(w, "!#%d#", i);
         }
         else {
-            write_fmt(w, "!#(%d)#", i);
+            Value sym = car_(v);
+            const char *name =
+                type(sym) == T_SYMBOL? &atoms[ordinal(sym)] : typeof_string(sym);
+            write_fmt(w, "!#(%d %s)#", i, name);
         }
         return;
     }
@@ -347,7 +359,14 @@ Value *scoped_lookup(Value sym, Value env) {
     return NULL;
 }
 void define(Value sym, Value val, Value env) {
-    car_(env) = cons(cons(sym, val), car_(env));
+    Value frame = car(env);
+    Value *lu = lookup(sym, frame);
+    if(lu) {
+        *lu = val;
+    }
+    else {
+        car_(env) = cons(cons(sym, val), frame);
+    }
 }
 Value push_scope (Value env) {
     return cons(nil, env);
@@ -693,9 +712,9 @@ Value relocate(Value v) {
             Cell cell = fromspace[ordinal(v)];
             if(cell.car == unbound) return cell.cdr;
             cells = fromspace;
-            printf("Relocate %d %d: ", type(v), ordinal(v));
-            print(v);
-            printf("\n");
+            //printf("Relocate %d %d: ", type(v), ordinal(v));
+            //print(v);
+            //printf("\n");
             cells = tospace;
             Value c = box(type(v), ++sp);
             fromspace[ordinal(v)] = (Cell) { unbound, c };
@@ -703,9 +722,9 @@ Value relocate(Value v) {
                 relocate(cell.car),
                 relocate(cell.cdr)
             };
-            printf("Relocated %d %d: ", type(c), ordinal(c));
-            print(v);
-            printf("\n");
+            //printf("Relocated %d %d: ", type(v), ordinal(v));
+            //print(c);
+            //printf("\n");
             return c;
         }
     }
@@ -800,7 +819,6 @@ int main() {
         // Only add to history if it's not an error
         add_history(line);
         if(v == SYM_INERT) {
-            printf("Inert\n");
             continue;
         }
         define(SYM_RECENT, v, env);
