@@ -18,7 +18,7 @@
 #define ORD_MASK ~(((1<<TYPE_BITS) - 1) << (sizeof(Value)*8 - TYPE_BITS))
 #define BUFFER_SIZE 40
 
-#define box_(type, ordinal) (type << (sizeof(Value)*8 - TYPE_BITS) | ordinal)
+#define box_(type, ordinal) (type << (sizeof(Value)*8 - TYPE_BITS) | (ordinal&ORD_MASK))
 
 #define car_(v) cells[ordinal(v)].car
 #define cdr_(v) cells[ordinal(v)].cdr
@@ -48,17 +48,18 @@ BuiltinEntry get_builtin(int ord);
 
 /// Global variables ///
 #define INIT_ATOMS(F) \
-    F(UNBOUND, "", 0) F(QUOTE, "quote", 1) F(VAU, "$vau", 2) \
-    F(WRAP, "wrap", 3) F(UNWRAP, "unwrap", 4) F(META, "meta", 5) \
-    F(TRUE, "#t", 6) F(INERT, "#inert", 7) F(IGNORE, "#ignore", 8)
+    F(UNBOUND, "") F(QUOTE, "quote") F(VAU, "$vau") \
+    F(WRAP, "wrap") F(UNWRAP, "unwrap") F(META, "meta") \
+    F(TRUE, "#t") F(INERT, "#inert") F(IGNORE, "#ignore") \
+    F(RECENT, "#")
 
-#define INIT_ATOMS_ENUM(name, str, ord) Value SYM_ ## name;
+#define INIT_ATOMS_ENUM(name, str) Value SYM_ ## name;
 INIT_ATOMS(INIT_ATOMS_ENUM)
 
 static volatile int int_state = 0;
 const char *errmsg = 0;
 const Value nil = 0, unbound = T_SYMBOL;
-char atoms[MAX_ATOMS];
+char atoms[MAX_ATOMS] = {0};
 Cell a_cells[MAX_CELLS] = {0}, b_cells[MAX_CELLS] = {0};
 Cell *fromspace = a_cells, *tospace = b_cells, *cells = a_cells;
 size_t hp = 0, sp = 0; // Heap and stack pointer
@@ -72,7 +73,7 @@ _Noreturn void error(const char *msg, ...) {
         vfprintf(stderr, msg, args);
         fprintf(stderr, "\n");
     }
-    int_state = 1;
+    int_state = 0;
     longjmp(toplevel, 1);
 }
 
@@ -81,11 +82,11 @@ ValueType type(Value v) {
 }
 int ordinal(Value v) {
     return ((int32_t)(v << TYPE_BITS)) >> TYPE_BITS;
-    //return (v & ORD_MASK) | ((v & (1<<(ORD_BITS - 1)))? ~ORD_MASK : 0);
 }
 bool iscons(Value v) { return v && type(v) == T_CONS; }
+bool isconslike(Value v) { return iscons(v) || type(v) == T_CAPSULE; }
 Value box(ValueType type, int ord) {
-    if(ordinal(ord) & ~ORD_MASK) error("box: ordinal %d too large", ord);
+    if(ordinal(ord) != ord) error("box: ordinal %d too large", ord);
     return box_(type, ord);
 }
 
@@ -119,6 +120,9 @@ typedef struct {
 } string_writer_data;
 void string_write_cb(const char *s, string_writer_data *buf) {
     size_t len = strnlen(s, buf->len);
+    if(buf->pos + len + 1 >= buf->len) {
+        error("string_write_cb: buffer full");
+    }
     memcpy(buf->buf + buf->pos, s, len + 1);
     buf->pos += len;
 }
@@ -140,6 +144,7 @@ const char *typeof_string(Value v) {
 }
 
 Value intern(const char *sym) {
+    //printf("Intern %s\n", sym);
     size_t i = 0;
     while(i < hp) {
         if(strcmp(&atoms[i], sym) == 0) {
@@ -160,17 +165,87 @@ Value cons(Value car, Value cdr) {
     return box(T_CONS, sp);
 }
 Value car(Value v) {
-    if(v && type(v) == T_CONS) return car_(v);
+    if(iscons(v)) return car_(v);
     error("car: not a cons");
 }
 Value cdr(Value v) {
-    if(v && type(v) == T_CONS) return cdr_(v);
+    if(iscons(v)) return cdr_(v);
     error("cdr: not a cons");
 }
 
-void write_ob(Writer *w, Value v) {
+void write_looped(Writer *w, Value v, Value *seen);
+
+int check_seen(Value v, Value *seen) {
+    if(!isconslike(v)) return 0;
+    int i;
+    for(i = 0; i < 1024 && seen[i]; ++i) {
+        if(seen[i] == v) return i + 1;
+    }
+    if(i == 1024) error("write_looped: seen too many");
+    seen[i] = v;
+    return 0;
+}
+
+void write_ls(Writer *w, Value v, Value *seen);
+void write_capsule(Writer *w, Value v, Value *seen) {
+    write_fmt(w, "#(");
+    if(car_(v) == SYM_VAU) {
+        write_fmt(w, "$vau");
+        if(isconslike(cdr_(v))) {
+            write_fmt(w, " #E ");
+            write_ls(w, cdr_(cdr_(v)), seen);
+        }
+    }
+    else {
+        write_ls(w, v, seen);
+    }
+    write_fmt(w, ")#");
+}
+
+void write_ls(Writer *w, Value v, Value *seen) {
+    for(;;) {
+        write_looped(w, car_(v), seen);
+        v = cdr_(v);
+        // Problem: Need to run check_seen to see if the cdr is a loop
+        // But then, if we break later and v is not nil, write_looped will
+        // already have v in seen, so it will print a number
+        int i = check_seen(v, seen);
+        if(i) {
+            write_fmt(w, " . #");
+            write_fmt(w, iscons(seen[i])? "%d#" : "%d)#", i);
+            return;
+        }
+        if(iscons(v)) {
+            write_fmt(w, " ");
+            continue;
+        }
+        if(isconslike(v)) {
+            write_fmt(w, " . ");
+            write_capsule(w, v, seen);
+            return;
+        }
+        break;
+    }
+    if(v) {
+        write_fmt(w, " . ");
+        write_looped(w, v, seen);
+    }
+}
+
+void write_looped(Writer *w, Value v, Value *seen) {
     if(v == nil) {
         write_fmt(w, "()");
+        return;
+    }
+    
+    int i = check_seen(v, seen);
+    if(i) {
+        if(iscons(seen[i])) {
+            write_fmt(w, "!#%d#", i);
+        }
+        else {
+            write_fmt(w, "!#(%d)#", i);
+        }
         return;
     }
     
@@ -179,30 +254,20 @@ void write_ob(Writer *w, Value v) {
             write_fmt(w, "%d", ordinal(v));
             break;
         case T_SYMBOL:
-            write_fmt(w, "%s", &atoms[ordinal(v)]);
+            if(v == SYM_UNBOUND) {
+                write_fmt(w, "<unbound>");
+            }
+            else {
+                write_fmt(w, "%s", &atoms[ordinal(v)]);
+            }
             break;
-        case T_CONS: {
+        case T_CONS:
             write_fmt(w, "(");
-            write_ob(w, car(v));
-            v = cdr(v);
-            while(iscons(v)) {
-                write_fmt(w, " ");
-                write_ob(w, car(v));
-                v = cdr(v);
-            }
-            if(v) {
-                write_fmt(w, " . ");
-                write_ob(w, v);
-            }
+            write_ls(w, v, seen);
             write_fmt(w, ")");
             break;
-        }
         case T_CAPSULE:
-            write_fmt(w, "#(");
-            write_ob(w, car_(v));
-            write_fmt(w, " ");
-            write_ob(w, cdr_(v));
-            write_fmt(w, ")#");
+            write_capsule(w, v, seen);
             break;
         case T_BUILTIN:
             write_fmt(w, "<builtin %s>", get_builtin(ordinal(v)).name);
@@ -210,12 +275,17 @@ void write_ob(Writer *w, Value v) {
     }
 }
 
+void write_ob(Writer *w, Value v) {
+    Value seen[1024] = {0};
+    write_looped(w, v, seen);
+}
+
 void print(Value v) {
     write_ob(&lisp_stdout, v);
 }
 
 char *tostring(Value v) {
-    static char buf[1024];
+    static char buf[4096];
     string_writer_data bl = {buf, sizeof(buf), 0};
     Writer w;
     string_writer(&w, &bl);
@@ -558,7 +628,7 @@ char scan(Reader *r) {
                 r->buf[i++] = consume(r);
             } while(i < BUFFER_SIZE && !isstop(peek(r)));
             if(i == BUFFER_SIZE) {
-                r->buf[i] = '\0';
+                r->buf[i - 1] = '\0';
                 error("read: token too long \"%s...\"", r->buf);
             }
             break;
@@ -591,7 +661,7 @@ Value parse(Reader *r) {
             }
             return v;
         case ')': error("read: unexpected ')'");
-        case '\'': return cons(SYM_QUOTE, cons(parse(r), nil));
+        case '\'': scan(r); return cons(SYM_QUOTE, cons(parse(r), nil));
         case '"':
             i = strlen(r->buf) - 1;
             if(r->buf[i] == '"') {
@@ -606,33 +676,37 @@ Value parse(Reader *r) {
 }
 
 Value read_ob(Reader *r) {
-    scan(r);
-    return r->buf[0]? parse(r) : nil;
+    char c = scan(r);
+    return (c && c != EOF)? parse(r) : SYM_INERT;
 }
 
 Value relocate(Value v) {
     if(v == nil) return v;
+    //printf("Relocate %d %s\n", v, tostring(v));
     switch(type(v)) {
         case T_INT:
         case T_SYMBOL:
         case T_BUILTIN:
             return v;
         case T_CONS:
-            if(fromspace[ordinal(v)].car == unbound) {
-                return fromspace[ordinal(v)].cdr;
-            }
-            [[fallthrough]];
         case T_CAPSULE: {
-            // Order is important here. Allocate destination, get original
-            //  cell, and mark unbound before relocating
-            Value c = cons(nil, nil);
             Cell cell = fromspace[ordinal(v)];
+            if(cell.car == unbound) return cell.cdr;
+            cells = fromspace;
+            printf("Relocate %d %d: ", type(v), ordinal(v));
+            print(v);
+            printf("\n");
+            cells = tospace;
+            Value c = box(type(v), ++sp);
             fromspace[ordinal(v)] = (Cell) { unbound, c };
             tospace[ordinal(c)] = (Cell) {
                 relocate(cell.car),
                 relocate(cell.cdr)
             };
-            return box(type(v), ordinal(c));
+            printf("Relocated %d %d: ", type(c), ordinal(c));
+            print(v);
+            printf("\n");
+            return c;
         }
     }
     error("relocate: ???");
@@ -662,7 +736,7 @@ int main() {
     rl_readline_name = "vau-lisp";
     rl_attempted_completion_function = NULL;
     
-    #define INIT_ATOMS_INTERN(name, str, ord) SYM_ ## name = intern(str);
+    #define INIT_ATOMS_INTERN(name, str) SYM_ ## name = intern(str);
     INIT_ATOMS(INIT_ATOMS_INTERN)
     
     Value env = cons(nil, nil);
@@ -693,6 +767,8 @@ int main() {
     repl:
     for(;;) {
         char *line = readline("\x01\x1b[7m\x02ϝ>>\x01\x1b[0m\x02 ");
+        if(line == NULL) break; // CTRL-D EOF
+        
         if(line[0] == '/') {
             if(strcmp(&line[1], "quit") == 0) break;
             else if(strcmp(&line[1], "gc") == 0) env = gc(env);
@@ -707,8 +783,6 @@ int main() {
             add_history(line);
             continue;
         }
-        
-        if(line == NULL) continue;
         
         // Empty line
         int i;
@@ -726,8 +800,10 @@ int main() {
         // Only add to history if it's not an error
         add_history(line);
         if(v == SYM_INERT) {
+            printf("Inert\n");
             continue;
         }
+        define(SYM_RECENT, v, env);
         print(v);
         putchar('\n');
         

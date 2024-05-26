@@ -1,11 +1,13 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -gdwarf-2 -g3
+CFLAGS = -Wall -Wextra -Werror
 SRC = $(wildcard src/*.c)
 LIBS = -lreadline
 
+out/debug: $(SRC)
+	$(CC) $(CFLAGS) -gdwarf-2 -g3 -o $@ $^ $(LIBS)
+
 out/esp: $(SRC)
-	@mkdir -p out
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) -Os -o $@ $^ $(LIBS)
 
 clean:
 	rm -f out/*
